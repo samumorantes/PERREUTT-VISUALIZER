@@ -1,0 +1,2332 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/x-icon" href="/fiesta.ico">
+<title>FIESTA — Visualizer</title>
+<style>
+  @font-face{font-family:'SpaceGrotesk';src:url('/fonts/spacegrotesk.woff2') format('woff2');font-display:swap}
+  @font-face{font-family:'ArcadeClassic';src:url('/fonts/arcadeclassic_full.woff') format('woff');font-display:swap}
+  :root{
+    --fs:7vw; --tc:#fff;
+    --lyric-font:'ArcadeClassic',monospace;
+    --scan-op:.35; --mask-op:.16; --vig-op:.55; --noise-op:.07;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden;position:relative;font-family:"Segoe UI",system-ui,sans-serif;background:#000;
+    animation:powerOn 1.1s steps(1,end) 1, crtFlicker 21s 1.1s infinite}
+  body.flicker-off{animation:powerOn 1.1s steps(1,end) 1}
+  @keyframes powerOn{0%{opacity:0}18%{opacity:.7}30%{opacity:.12}44%{opacity:.95}55%{opacity:.25}70%{opacity:1}100%{opacity:1}}
+  @keyframes crtFlicker{0%,100%{opacity:1}93.5%{opacity:1}94%{opacity:.9}94.5%{opacity:1}96.5%{opacity:.95}97%{opacity:1}}
+
+  /* ====== MUEBLE DE TV VINTAGE: IMAGEN REAL (tv-frame-clean.png) ENCIMA ======
+     La imagen del marco va por ENCIMA de todo lo visual; su hueco transparente
+     deja ver la app. El PNG es 1493x983 (ratio 1.5188) y se escala con "contain":
+     la imagen siempre mide 100svh de alto, centrada. El hueco medido sobre el
+     PNG (127,94)-(1364,887) px → posición de #screen en función de 100svh. */
+  :root{ --tvratio: 1.51882;   /* w/h del PNG */
+         --hx0: .08506; --hy0: .09563; --hx1: .08573; --hy1: .09664; } /* hueco frac */
+  #tvFrame{position:absolute;inset:0;z-index:20;pointer-events:none;
+    background:url("tv-frame-clean.png") no-repeat center / auto 100%}
+  /* pantalla EXACTAMENTE en el hueco (válido para cualquier viewport 16:9 o más ancho).
+     border-radius generoso para seguir la curva de las esquinas del tubo. */
+  #screen{
+    left: calc(50vw - (100svh * var(--tvratio) / 2) + (100svh * var(--tvratio)) * var(--hx0));
+    top: calc(100svh * var(--hy0));
+    width: calc(100svh * var(--tvratio) * (1 - var(--hx0) - var(--hx1)));
+    height: calc(100svh * (1 - var(--hy0) - var(--hy1)));
+    position:absolute; z-index:0; overflow:hidden;
+    transform:none;
+    border-radius:3vmin}
+  /* con lente activa NO animar transform (cada frame repinta el filtro = lag + parpadeo) */
+  body.lens-live #screen{animation:none}
+  /* TARGET del lente: capas visuales (fondo+letra+CRT). La UI vive fuera → clickeable */
+  #lensTarget{position:absolute;inset:0;pointer-events:none}
+  /* con lente activa NO escalar #lensTarget: el feDisplacementMap con amp adecuada
+     cubre la deformación visualmente. Escalar el target multiplica el coste del
+     filtro (cada píxel del filtro tiene que muestrear un área más grande). */
+  body.lens-live #lensTarget{transform:none}
+  #screen.tilt-off{transform:none;animation:none}
+  @keyframes screenDrift{
+    0%{transform:perspective(1100px) rotateX(1.1deg) rotateY(.4deg) translate(0,0)}
+    33%{transform:perspective(1100px) rotateX(1.18deg) rotateY(.35deg) translate(.5px,-.3px)}
+    66%{transform:perspective(1100px) rotateX(1.04deg) rotateY(.45deg) translate(-.4px,.4px)}
+    100%{transform:perspective(1100px) rotateX(1.1deg) rotateY(.4deg) translate(0,0)}}
+
+  #bg{position:absolute;inset:0;background:#101014}
+  /* MODO CHILL: blobs fluidos con la paleta de la portada (canvas animado al ritmo) */
+  #fluidCanvas{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;
+    transition:opacity 3s ease-in-out}
+  #fluidCanvas.on{opacity:.92}
+  /* SIN transición: colores ABRUPTO en el beat exacto */
+  #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+  #pbar{position:absolute;top:0;left:0;height:5px;width:0%;background:rgba(255,255,255,.9);z-index:6;transition:width .2s linear}
+  /* ESPECTRO CRT: barras ecualizador retro abajo (solo fiesta) */
+  #spectrum{position:absolute;left:0;right:0;bottom:0;height:14vh;z-index:3;pointer-events:none;
+    display:none;align-items:flex-end;gap:4px;padding:0 2vw 0 2vw;opacity:.5}
+  #spectrum.on{display:flex}
+  #spectrum i{flex:1;background:linear-gradient(180deg,var(--tc),transparent);border-radius:2px 2px 0 0;
+    min-height:4px;transform-origin:bottom}
+  /* REBOTE AL BEAT: la letra late sutilmente */
+  body.beat-bounce #lyrics .line.main{transition:none}
+  /* QR gigante para votar canciones */
+  #qrOverlay{position:absolute;inset:0;z-index:12;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.75);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+    flex-direction:column;gap:18px;color:#fff;font-family:'SpaceGrotesk',sans-serif;text-align:center}
+  #qrOverlay.on{display:flex}
+  #qrBox{background:#fff;border-radius:20px;padding:24px;box-shadow:0 20px 80px rgba(0,0,0,.6)}
+  #qrHint{font-size:15px;letter-spacing:1px;opacity:.9}
+  /* PARTÍCULAS DE DROP */
+  #fxCanvas{position:absolute;inset:0;z-index:6;pointer-events:none}
+
+  /* ====== TEXTURA CRT ====== */
+  #crt{position:absolute;inset:0;z-index:7;pointer-events:none;border-radius:2.6vmin;overflow:hidden;
+    background:
+      radial-gradient(ellipse 90% 24% at 50% -6%, rgba(255,255,255,.13), transparent 68%),
+      radial-gradient(ellipse 70% 45% at 15% 110%, rgba(130,190,255,.07), transparent 60%);
+    box-shadow:inset 0 0 13vmin rgba(0,0,0,.62), inset 0 0 3.2vmin rgba(0,0,0,.5)}
+  #crt::before{content:"";position:absolute;inset:0; /* scanlines */
+    background:repeating-linear-gradient(0deg, rgba(0,0,0,var(--scan-op)) 0 2px, transparent 2px 5px)}
+  #crt::after{content:"";position:absolute;inset:0; /* fósforos RGB + viñeta */
+    background:
+      radial-gradient(ellipse 130% 130% at 50% 50%, transparent 50%, rgba(0,0,0,var(--vig-op)) 100%),
+      repeating-linear-gradient(90deg, rgba(255,0,0,var(--mask-op)) 0 3px, rgba(0,255,0,var(--mask-op)) 3px 6px, rgba(0,0,255,var(--mask-op)) 6px 9px)}
+  #noise{position:absolute;inset:0;z-index:8;pointer-events:none;opacity:var(--noise-op);
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='2' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
+    animation:noiseShift 2.5s steps(5) infinite}
+  @keyframes noiseShift{0%{background-position:0 0}20%{background-position:-90px 44px}40%{background-position:63px -72px}60%{background-position:-44px 82px}80%{background-position:104px 31px}100%{background-position:0 0}}
+  /* LENTE GLOBAL (WebGL): canvas encima de TODO; copia la pantalla cada frame
+     y la deforma por píxel con shader de barril. Compatible móvil+desktop. */
+  #refresh{position:absolute;left:0;right:0;height:13vh;z-index:8;pointer-events:none;opacity:0;
+    background:linear-gradient(180deg,transparent,rgba(255,255,255,.08) 42%,rgba(255,255,255,.17) 50%,rgba(255,255,255,.08) 58%,transparent);
+    animation:roll 8s linear infinite}
+  #refresh.hidden-refresh{display:none}
+  @keyframes roll{0%{top:-18vh;opacity:0}7%{opacity:1}93%{opacity:1}100%{top:118vh;opacity:0}}
+
+  #top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:14px;padding:3vmin 8vmin 16px 6vmin;color:var(--tc);transition:color .2s;z-index:21;background:linear-gradient(rgba(0,0,0,.28),transparent);pointer-events:none}
+  #top > *{pointer-events:auto}
+  #cover{width:54px;height:54px;border-radius:6px;object-fit:cover;background:rgba(255,255,255,.15)}
+  #meta{min-width:0}
+  #song{font-family:'SpaceGrotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+  #artist{font-size:13px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+  #badge{position:absolute;top:16px;right:62px;font-size:11px;font-weight:700;letter-spacing:1.5px;padding:5px 10px;border-radius:2px;background:rgba(0,0,0,.45);color:#ffd54a;z-index:5;display:none;font-family:'SpaceGrotesk',sans-serif}
+
+  #gear{position:fixed;top:16px;right:20px;width:44px;height:44px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.65);color:#fff;font-size:22px;cursor:pointer;z-index:100;display:flex;align-items:center;justify-content:center;pointer-events:auto !important;box-shadow:0 4px 16px rgba(0,0,0,.5);transition:transform .2s, background .2s}
+  #gear:hover{background:rgba(255,255,255,.25);transform:scale(1.08)}
+
+  /* ====== SELECTOR RÁPIDO FIESTA/FLUIDO (eliminado → tecla F) ====== */
+  /* toast: aviso efímero de modo */
+  #toast{position:absolute;top:18vh;left:50%;transform:translateX(-50%) scale(.9);z-index:13;
+    font:700 22px 'SpaceGrotesk',sans-serif;letter-spacing:3px;color:#fff;
+    background:rgba(0,0,0,.55);padding:14px 30px;border-radius:16px;
+    -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,.15);opacity:0;pointer-events:none;
+    transition:opacity .3s ease, transform .3s ease}
+  #toast.on{opacity:1;transform:translateX(-50%) scale(1)}
+  /* sin mueble de TV: pantalla a pantalla completa, marco oculto */
+  body.no-tv #tvFrame{display:none}
+  body.no-tv #screen{left:0;top:0;width:100vw;height:100svh;border-radius:2.6vmin}
+
+  /* ====== SELECTOR RÁPIDO FIESTA / FLUIDO ====== */
+  #moodSwitch{position:fixed;top:70px;right:20px;z-index:99;display:flex;align-items:center;
+    padding:4px;border-radius:16px;background:rgba(0,0,0,.30);
+    -webkit-backdrop-filter:blur(16px) saturate(160%);backdrop-filter:blur(16px) saturate(160%);
+    border:1px solid rgba(255,255,255,.16);box-shadow:0 4px 18px rgba(0,0,0,.3);
+    transition:opacity .8s ease}
+  body.ui-hidden #moodSwitch{opacity:0;pointer-events:none}
+  #moodSwitch button{width:44px;height:34px;border:none;border-radius:12px;background:transparent;
+    font-size:17px;cursor:pointer;opacity:.55;transition:opacity .25s, background .25s, transform .25s}
+  #moodSwitch button:hover{opacity:.9}
+  #moodSwitch button.active{opacity:1;background:rgba(255,255,255,.22);transform:scale(1.08)}
+
+  /* ====== PANEL DE AJUSTES — LIQUID GLASS ====== */
+  #panel{position:fixed;top:118px;right:20px;width:320px;max-height:82vh;overflow-y:auto;
+    color:#fff;border-radius:20px;padding:16px 18px;z-index:99;display:none;
+    background:linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.05));
+    -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%);
+    box-shadow:0 8px 32px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25),
+               inset 0 -1px 0 rgba(255,255,255,.08);
+    border:1px solid rgba(255,255,255,.22)}
+  #panel::before{content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+    background:radial-gradient(ellipse 120% 60% at 20% -10%, rgba(255,255,255,.22), transparent 55%)}
+  #panel h3{margin:14px 0 9px;font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:.75;
+    font-family:'SpaceGrotesk',sans-serif;border-bottom:1px solid rgba(255,255,255,.15);padding-bottom:5px}
+  #panel h3:first-child{margin-top:0}
+  .row{margin-bottom:10px;font-size:12.5px}
+  .row label{display:block;margin-bottom:4px;opacity:.92}
+  .row .val{float:right;opacity:.65;font-size:11px}
+  .row input[type=range]{width:100%;accent-color:#1db954}
+  .row select,.row button{width:100%;padding:8px 10px;border-radius:12px;border:1px solid rgba(255,255,255,.18);
+    font-size:12.5px;cursor:pointer;color:#fff;background:rgba(255,255,255,.10);
+    -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+  .row select option{background:#1a1a24;color:#fff}
+  .row button:hover, .row select:hover{background:rgba(255,255,255,.18)}
+  .chk{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12.5px}
+  .chk input{accent-color:#1db954;width:15px;height:15px}
+  .linklike{float:right;font-size:10px;letter-spacing:1px;color:#7fe8a4;cursor:pointer;opacity:.9;
+    text-transform:none;border-bottom:1px dotted rgba(127,232,164,.6)}
+  .linklike:hover{opacity:1;color:#a5f5c1}
+  .crt-group{border-left:2px solid rgba(255,255,255,.08);padding-left:10px}
+  .btn{background:linear-gradient(135deg,#1db954,#17a34a);color:#fff;font-weight:700;border:none}
+  .btn2{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.18)}
+  #panel::-webkit-scrollbar{width:5px}
+  #panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25);border-radius:3px}
+
+  /* ====== AUTO-HIDE UI ====== */
+  #top,#gear,#badge,#source,#syncLed,#queueTicker{transition:opacity .8s ease}
+  body.ui-hidden #top, body.ui-hidden #gear, body.ui-hidden #badge,
+  body.ui-hidden #source, body.ui-hidden #syncLed, body.ui-hidden #queueTicker{opacity:0;pointer-events:none}
+
+  /* ====== TICKER DE COLA (abajo-izquierda) ====== */
+  #queueTicker{position:absolute;left:6vmin;bottom:4.4vmin;z-index:21;display:flex;align-items:center;gap:9px;
+    max-width:44vw;font-family:'SpaceGrotesk',sans-serif;color:var(--tc);text-shadow:0 1px 5px rgba(0,0,0,.5);
+    padding:7px 13px;border-radius:14px;background:rgba(0,0,0,.22);
+    -webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);
+    border:1px solid rgba(255,255,255,.14)}
+  #queueLabel{font-size:9px;font-weight:700;letter-spacing:1.5px;opacity:.7;white-space:nowrap}
+  #queueText{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.95}
+
+  /* ====== OJO DE PEZ: SOLO filtro por píxel. La deformación la hace el
+       feDisplacementMap (lente SVG) sobre #lensTarget. El texto va SIEMPRE plano. */
+  body.fisheye #lyrics{perspective:900px}
+  body.fisheye #lyrics .line.back{
+    transform:scale(.94);filter:blur(.4px);opacity:.36}
+  /* ====== LETRA ====== */
+  #lyrics{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:11vh 6vw;color:var(--tc);transition:color .15s;z-index:2;pointer-events:none}
+  #lyrics .line{text-align:center;margin:0 auto;display:inline-block;max-width:100%;white-space:nowrap}
+  #lyrics.no-glow .line{text-shadow:none}
+  #lyrics.upper .line{text-transform:uppercase}
+  @keyframes song-flash {
+    0%{opacity:1;text-shadow:none}
+    40%{opacity:.85;text-shadow:0 0 6vw #fff}
+    100%{opacity:.3;text-shadow:none}
+  }
+  #lyrics.song-flash .line{animation:song-flash .5s ease-out forwards}
+
+  /* huevo: sin fósforos RGB (se queda la viñeta) */
+  .line{font-family:var(--lyric-font);font-size:var(--fs);line-height:1.45;max-width:88vw;
+      overflow-wrap:normal;word-break:keep-all;hyphens:none;-webkit-hyphens:none;
+      text-shadow:var(--lyric-shadow, 0 0 2.5vmin rgba(255,255,255,.14))}
+  /* spans del word-spacing (espacios): inline-block para que margin funcione */
+  /* SUBTÍTULO: más pequeño y opaco (backs/paréntesis) */
+  .line.back{font-size:calc(var(--fs) * .5);opacity:.45;line-height:1.2;
+    text-shadow:none;letter-spacing:0}
+  /* durante easter egg: ocultar el back (no aplica) */
+  #lyrics.egg .line.back{display:none}
+  /* durante song-flash: el back hereda la animación */
+  #lyrics.song-flash .line.back{animation:song-flash .5s ease-out forwards}
+  #lineNone{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:8vw;font-size:calc(var(--fs)*.5);color:var(--tc);z-index:2;font-family:'SpaceGrotesk',sans-serif;font-weight:700;transition:color .15s;pointer-events:none}
+  #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:8vw;font-size:clamp(18px,3.4vw,34px);color:var(--tc);z-index:3;font-family:'SpaceGrotesk',sans-serif;font-weight:700;line-height:1.6;white-space:pre-line;transition:color .15s;text-shadow:0 0 3vmin rgba(255,255,255,.14);pointer-events:none}
+  #source{position:absolute;bottom:9px;left:0;right:0;text-align:center;font-size:11px;opacity:.55;color:var(--tc);z-index:4;font-family:'SpaceGrotesk',sans-serif;letter-spacing:1.5px;transition:color .15s;text-shadow:0 1px 6px rgba(0,0,0,.45)}
+  #syncLed{position:absolute;right:5.4vmin;bottom:4.6vmin;z-index:21;display:flex;align-items:center;gap:7px;
+    font:700 10px/1 'SpaceGrotesk',sans-serif;letter-spacing:1px;color:var(--tc);text-shadow:0 1px 5px #000}
+  #syncLed i{width:10px;height:10px;border-radius:50%;background:#ff3647;box-shadow:0 0 7px #ff3647}
+  #syncLed.waiting i{background:#ffc43d;box-shadow:0 0 7px #ffc43d}
+  #syncLed.synced i{background:#41f37b;box-shadow:0 0 9px #41f37b}
+  #syncLed.offline i{animation:ledBlink .8s steps(2,end) infinite}
+  @keyframes ledBlink{50%{opacity:.18}}
+  #bigLogin{position:absolute;bottom:44px;left:50%;transform:translateX(-50%);display:none;background:#1db954;color:#fff;border:none;border-radius:2px;padding:18px 34px;font-size:16px;font-weight:700;cursor:pointer;z-index:11;box-shadow:0 8px 30px rgba(0,0,0,.45);font-family:'SpaceGrotesk',sans-serif;letter-spacing:.5px}
+  #bigLogin:hover{background:#1ed760}
+
+  /* ====== CAMBIO DE CANAL (TV antigua) ====== */
+  #channel{position:absolute;inset:0;z-index:9;pointer-events:none;visibility:hidden}
+  #channel.on{visibility:visible}
+  #chanStatic{position:absolute;inset:0;opacity:0;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/></filter><rect width='220' height='220' filter='url(%23n)'/></svg>");
+    background-size:220px 220px;filter:contrast(1.7) brightness(1.15)}
+  #channel.on #chanStatic{animation:stNoise .45s steps(8) 1}
+  @keyframes stNoise{
+    0%{opacity:0;background-position:0 0}
+    8%{opacity:1}
+    12%{background-position:-160px 40px}
+    22%{background-position:90px -120px}
+    32%{background-position:-50px 150px}
+    42%{background-position:130px 60px}
+    52%{background-position:-110px -80px}
+    62%{background-position:70px -30px}
+    72%{background-position:-30px 110px}
+    82%{background-position:140px -140px}
+    92%{opacity:1}
+    100%{opacity:0;background-position:0 0}}
+  #chanBars{position:absolute;inset:0;opacity:0;
+    background:repeating-linear-gradient(90deg,
+      #c0c0c0 0 12.5%, #c0c000 12.5% 25%, #00c0c0 25% 37.5%, #00c000 37.5% 50%,
+      #c000c0 50% 62.5%, #c00000 62.5% 75%, #0000c0 75% 87.5%, #101010 87.5% 100%)}
+  #channel.on #chanBars{animation:barsSweep .5s steps(1) 1}
+  @keyframes barsSweep{
+    0%{opacity:0;transform:scaleY(.02);background-position:0 0}
+    12%{opacity:.95;transform:scaleY(1)}
+    30%{background-position:0 -30px}
+    55%{opacity:.9;transform:scaleY(1.03)}
+    70%{background-position:0 45px}
+    85%{opacity:.5}
+    100%{opacity:0;transform:scaleY(.05);background-position:0 90px}}
+
+  /* ====== TRANSICIONES ALTERNATIVAS ====== */
+  #transOverlay{position:absolute;inset:0;z-index:9;display:none;pointer-events:none;overflow:hidden}
+  /* obturador de proyector */
+  .shut{position:absolute;left:0;width:100%;height:52%;background:#000;
+    box-shadow:inset 0 6px 24px rgba(0,0,0,.8)}
+  .shut.top{top:0}.shut.bot{bottom:0}
+  .shut-label{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    font:700 14px 'SpaceGrotesk',sans-serif;letter-spacing:4px;color:#fff;opacity:0;z-index:2;
+    text-shadow:0 2px 10px rgba(255,255,255,.35)}
+  #transOverlay.anim-shutter .shut.top{animation:shutTop 1.1s cubic-bezier(.7,0,.3,1) forwards}
+  #transOverlay.anim-shutter .shut.bot{animation:shutBot 1.1s cubic-bezier(.7,0,.3,1) forwards}
+  #transOverlay.anim-shutter .shut-label{animation:shutLabel 1.1s ease forwards}
+  @keyframes shutTop{0%{transform:translateY(-100%)}38%,62%{transform:translateY(0)}100%{transform:translateY(-100%)}}
+  @keyframes shutBot{0%{transform:translateY(100%)}38%,62%{transform:translateY(0)}100%{transform:translateY(100%)}}
+  @keyframes shutLabel{0%,25%{opacity:0}40%,60%{opacity:.95}78%,100%{opacity:0}}
+  /* vinilo girando con la portada al centro */
+  .vinyl{position:absolute;top:50%;left:50%;width:56vmin;height:56vmin;border-radius:50%;
+    transform:translate(-50%,-50%);overflow:hidden;
+    background:repeating-radial-gradient(circle at 50% 50%,
+      #111 0 2px, #1c1c1c 2px 4px);
+    box-shadow:0 10px 60px rgba(0,0,0,.7), inset 0 0 80px rgba(0,0,0,.9)}
+  .vinyl-hole{position:absolute;top:50%;left:50%;width:11vmin;height:11vmin;border-radius:50%;
+    transform:translate(-50%,-50%);background:#000;border:2px solid rgba(255,255,255,.15)}
+  .vinyl-cover{position:absolute;top:50%;left:50%;width:22vmin;height:22vmin;border-radius:50%;
+    object-fit:cover;transform:translate(-50%,-50%);box-shadow:0 0 40px rgba(0,0,0,.5)}
+  #transOverlay.anim-vinyl .vinyl{animation:vinylSpin 1.2s cubic-bezier(.65,0,.35,1) forwards}
+  #transOverlay.anim-vinyl .vinyl-hole{animation:none}
+  #transOverlay.anim-vinyl .vinyl-cover{animation:coverPop 1.2s cubic-bezier(.65,0,.35,1) forwards}
+  @keyframes vinylSpin{
+    0%{transform:translate(-50%,-50%) rotate(0deg) scale(.2);opacity:0}
+    18%{opacity:1}
+    55%{transform:translate(-50%,-50%) rotate(540deg) scale(1.05);opacity:1}
+    80%{transform:translate(-50%,-50%) rotate(720deg) scale(1);opacity:.9}
+    100%{transform:translate(-50%,-50%) rotate(900deg) scale(.15);opacity:0}}
+  @keyframes coverPop{
+    0%,20%{opacity:0;transform:translate(-50%,-50%) scale(.3)}
+    45%{opacity:1}
+    75%{opacity:1;transform:translate(-50%,-50%) scale(1)}
+    100%{opacity:0;transform:translate(-50%,-50%) scale(.4)}}
+</style>
+</head>
+<body>
+<div id="tvFrame"></div>
+<div id="screen">
+ <div id="lensTarget">
+  <div id="bg"></div>
+  <canvas id="fluidCanvas"></canvas>
+  <div id="flash"></div>
+  <div id="crt"></div>
+  <div id="noise"></div>
+  <div id="refresh"></div>
+  <div id="pbar"></div>
+  <div id="top">
+    <img id="cover" alt="">
+    <div id="meta"><div id="song">—</div><div id="artist">—</div></div>
+  </div>
+  <div id="badge">DEMO</div>
+  <div id="lyrics">
+    <div class="line main" id="lCur"></div>
+    <div class="line back" id="lBack" style="display:none"></div>
+  </div>
+  <div id="lineNone">NO LYRICS</div>
+  <div id="msg"></div>
+  <div id="source">LETRAS: LRCLIB + SPOTIFY + LYRICS.OVH · RITMO: AUDIO ANALYSIS</div>
+  <div id="queueTicker"><span id="queueLabel">A CONTINUACIÓN</span><span id="queueText"></span></div>
+  <div id="syncLed" class="offline" title="Estado de sincronización"><i></i><span id="syncText">OFFLINE</span></div>
+  </div><!-- /lensTarget -->
+ <div id="fpsCounter" style="position:fixed;left:10px;top:10px;z-index:9999;font:bold 13px 'SpaceGrotesk',monospace;color:#00ff88;text-shadow:0 0 6px rgba(0,255,136,.6);pointer-events:none;display:none">-- fps</div>
+
+  <!-- gear/panel moved outside #screen -->
+
+
+
+  <button id="bigLogin">🎵 CONECTAR CON SPOTIFY</button>
+  <div id="channel"><div id="chanStatic"></div><div id="chanBars"></div></div>
+  <canvas id="fxCanvas"></canvas>
+  <div id="spectrum"></div>
+  <div id="qrOverlay"><div id="qrBox"></div><div id="qrHint">Escanea para votar la siguiente canción 🎵</div></div>
+  <div id="transOverlay"></div>
+</div>
+
+<button id="gear" title="Ajustes (Tecla A)" aria-label="Abrir panel de ajustes">⚙</button>
+<div id="moodSwitch" title="Cambiar entre fiesta y fluido">
+  <button id="moodParty" title="Fiesta: flashes al beat" aria-label="Modo fiesta">🎉</button>
+  <button id="moodChill" title="Fluido: colores de la portada" aria-label="Modo fluido">🌊</button>
+</div>
+<div id="panel" style="display:none">
+    <h3>🎨 Temas</h3>
+    <div class="row"><label>Tema completo (paleta+CRT+fuente)</label>
+      <select id="themeSel">
+        <option value="classic">🎉 Clásico</option>
+        <option value="vaporwave">🌴 Vaporwave</option>
+        <option value="matrix">💚 Matrix</option>
+        <option value="snes">🎮 Super Nintendo</option>
+      </select></div>
+
+    <h3>Letra</h3>
+    <div class="row"><label>Tamaño: <span class="val" id="fsVal">7</span></label>
+      <input id="fsRange" type="range" min="3" max="16" step="0.5" value="7"></div>
+    <div class="row"><label>Fuente</label>
+      <select id="fontSel">
+        <option value="arcade">Arcade Classic</option>
+        <option value="grotesk">Space Grotesk</option>
+        <option value="impact">Impact (memes)</option>
+        <option value="courier">Courier (terminal)</option>
+        <option value="georgia">Georgia (serif)</option>
+        <option value="system">Sistema</option>
+      </select></div>
+    <div class="row"><label>Palabras por frase: <span class="val" id="phraseVal">4</span></label>
+      <input id="phraseRng" type="range" min="1" max="8" step="1" value="4"></div>
+    <div class="row"><label>Espacio entre palabras: <span class="val" id="wordSpVal">1.0×</span></label>
+      <input id="wordSpRng" type="range" min="0" max="3" step="0.1" value="1"></div>
+    <div class="row"><label>Intensidad ojo de pez: <span class="val" id="lensVal">12</span></label>
+      <input id="lensRng" type="range" min="0" max="40" step="2" value="12"></div>
+    <div class="chk"><input id="upperChk" type="checkbox"> MAYÚSCULAS</div>
+    <div class="row"><label>Grosor del borde: <span class="val" id="strokeVal">2</span></label>
+      <input id="strokeRng" type="range" min="0" max="6" step="1" value="2"></div>
+    <div class="row"><label>Sombra: <span class="val" id="shadowVal">50</span></label>
+      <input id="shadowRng" type="range" min="0" max="100" step="1" value="50"></div>
+
+    <h3>Color y ritmo</h3>
+    <div class="row"><label>Cambio de color</label>
+      <select id="ctiming">
+        <option value="bars">Downbeats — exacto a beatdrops</option>
+        <option value="beats">Cada beat (frenético)</option>
+        <option value="sections">Solo drops</option>
+      </select></div>
+    <div class="row"><label>Paleta</label>
+      <select id="cmode">
+        <option value="rgb">RGB intenso (recomendado)</option>
+        <option value="pastel">Pastel suave</option>
+        <option value="neon">Neón eléctrico</option>
+        <option value="sunset">Atardecer</option>
+        <option value="ocean">Océano</option>
+        <option value="byn">Blanco y negro</option>
+      </select></div>
+    <div class="row"><label>Fuerza del flash: <span class="val" id="flashVal">40</span></label>
+      <input id="flashRng" type="range" min="0" max="100" step="5" value="40"></div>
+    <div class="chk"><input id="pulseColorChk" type="checkbox" checked> Pulso DEL COLOR en cada beat (fluido)</div>
+    <div class="chk"><input id="pulseWhiteChk" type="checkbox"> Flash blanco en cada beat (fiesta)</div>
+    <div class="row"><label>Modo visual</label>
+      <select id="moodSel">
+        <option value="auto">Auto (detecta baladas)</option>
+        <option value="party">Fiesta siempre (flashes)</option>
+        <option value="chill">Fluido siempre (portada)</option>
+      </select></div>
+    <div class="chk"><input id="moodChk" type="checkbox" checked> Sugerir chill por palabras clave</div>
+
+    <h3>✨ Extras</h3>
+    <div class="chk"><input id="trailsChk" type="checkbox" checked> Estelas de nebulosa (fluido)</div>
+    <div class="chk"><input id="spectrumChk" type="checkbox"> Barras ecualizador retro (fiesta)</div>
+    <div class="chk"><input id="bounceChk" type="checkbox"> Letra con rebote al beat</div>
+    <div class="chk"><input id="dropChk" type="checkbox" checked> Explosión de partículas en drops</div>
+    <div class="chk"><input id="smartChk" type="checkbox" checked> Contraste inteligente por zonas</div>
+    <div class="chk"><input id="qrChk" type="checkbox"> QR para votar canciones (tecla Q)</div>
+    <div class="chk"><input id="transChk" type="checkbox"> Traducción de letras extranjeras</div>
+    <div class="chk"><input id="autoQChk" type="checkbox" checked> Calidad automática (&gt;100 fps)</div>
+
+    <h3>📺 Retro CRT <span id="crtAll" class="linklike">todo / nada</span></h3>
+    <div class="crt-group" id="crtGroup">
+    <div class="chk"><input id="scanChk" type="checkbox" checked> Scanlines</div>
+    <div class="row"><label>Scanlines: <span class="val" id="scanVal">70</span></label>
+      <input id="scanRng" type="range" min="0" max="100" step="1" value="70"></div>
+    <div class="row"><label>Fósforos RGB: <span class="val" id="maskVal">60</span></label>
+      <input id="maskRng" type="range" min="0" max="100" step="1" value="60"></div>
+    <div class="row"><label>Viñeta/curvatura: <span class="val" id="vigVal">70</span></label>
+      <input id="vigRng" type="range" min="0" max="100" step="1" value="70"></div>
+    <div class="row"><label>Ruido: <span class="val" id="noiseVal">50</span></label>
+      <input id="noiseRng" type="range" min="0" max="100" step="1" value="50"></div>
+    <div class="chk"><input id="flickChk" type="checkbox" checked> Flicker</div>
+    <div class="chk"><input id="tiltChk" type="checkbox" checked> Inclinación de pantalla</div>
+    <div class="chk"><input id="refChk" type="checkbox" checked> Banda de refresco</div>
+    <div class="chk"><input id="fishChk" type="checkbox" checked> Ojo de pez (letra cóncava)</div>
+    <div class="chk"><input id="tvChk" type="checkbox" checked> Mueble de TV vintage (imagen)</div>
+    </div>
+
+    <h3>Efectos</h3>
+    <div class="row"><label>Transición al cambiar canción</label>
+      <select id="transSel">
+        <option value="tv">📺 TV antigua (barras + estática)</option>
+        <option value="shutter">🎬 Obturador de cine</option>
+        <option value="vinyl">💿 Vinilo con la portada</option>
+        <option value="flashcolor">🌈 Flash de color</option>
+        <option value="none">Sin transición</option>
+      </select></div>
+    <div class="row"><button id="testChan" class="btn2">Probar transición</button></div>
+
+    <h3>💾 Presets por música</h3>
+    <div class="chk"><input id="globalLockChk" type="checkbox"> 🔒 Override global (los presets NO cambian nada)</div>
+    <div class="row" style="font-size:11px;opacity:.7;line-height:1.4">
+      Guarda cómo se ve AHORA y se aplicará solo cuando suene esta canción, artista o álbum.
+      Con el override global activo, los presets quedan desactivados.</div>
+    <div class="row"><button id="savePresetSong" class="btn2">🎵 Guardar para ESTA canción</button></div>
+    <div class="row"><button id="savePresetArtist" class="btn2">🎤 Guardar para este ARTISTA</button></div>
+    <div class="row"><button id="savePresetAlbum" class="btn2">💿 Guardar para este ÁLBUM</button></div>
+    <div class="row"><span id="presetCount" style="font-size:11px;opacity:.6"></span></div>
+    <div class="row"><button id="dumpPresets" class="btn2">🔍 Ver presets guardados</button></div>
+    <pre id="presetDump" style="font-size:10px;max-height:180px;overflow:auto;background:rgba(0,0,0,.4);border-radius:8px;padding:8px;display:none;white-space:pre-wrap"></pre>
+    <div class="row"><button id="clearPresets" class="btn2">🗑 Borrar todos los presets</button></div>
+
+    <h3>🌊 Fluido: paleta manual</h3>
+    <div class="chk"><input id="customPalChk" type="checkbox"> Usar paleta manual (ignora portada)</div>
+    <div id="palPickers" style="display:flex;gap:6px;margin-bottom:8px"></div>
+    <div class="row"><button id="palRandom" class="btn2">🎲 Colores aleatorios</button></div>
+    <div class="row"><button id="resetBtn" class="btn2">↺ Restablecer configuración</button></div>
+
+    <h3>Cuenta</h3>
+    <div class="row"><button id="loginBtn" class="btn">Conectar con Spotify</button></div>
+    <div class="row"><button id="logoutBtn" class="btn2">Desconectar</button></div>
+  </div>
+
+
+<script>
+const $ = id => document.getElementById(id);
+let S = null, curTrack = null, lineIdx = -1, lastShown = null;
+let beatPtr = 0, barPtr = 0, secPtr = 0;
+let playing = false;
+let pos = 0, posAt = 0, speed = 0;       // reloj local con corrección de fase
+
+const FONTS = {
+  arcade: "'ArcadeClassic',monospace",
+  grotesk: "'SpaceGrotesk',sans-serif",
+  impact: "Impact,'Arial Black',sans-serif",
+  courier: "'Courier New',monospace",
+  georgia: "Georgia,serif",
+  system: "system-ui,sans-serif",
+};
+/* Paletas para el modo fiesta */
+const PALETTES = {
+  rgb:    ["rgb(255,23,68)", "rgb(255,109,0)", "rgb(255,214,0)", "rgb(0,230,118)", "rgb(0,176,255)", "rgb(101,31,255)", "rgb(213,0,249)"],
+  pastel: ["hsl(340 85% 72%)", "hsl(30 90% 74%)", "hsl(55 90% 72%)", "hsl(150 70% 70%)", "hsl(200 85% 74%)", "hsl(265 80% 78%)"],
+  neon:   ["hsl(320 100% 55%)", "hsl(275 100% 60%)", "hsl(190 100% 50%)", "hsl(120 100% 50%)", "hsl(55 100% 55%)", "hsl(15 100% 55%)"],
+  sunset: ["hsl(355 95% 58%)", "hsl(20 100% 60%)", "hsl(40 100% 62%)", "hsl(310 75% 60%)", "hsl(280 80% 62%)"],
+  ocean:  ["hsl(200 95% 45%)", "hsl(180 90% 42%)", "hsl(220 90% 55%)", "hsl(165 85% 48%)", "hsl(240 80% 60%)"],
+};
+/* TEMAS COMPLETOS: paleta + CRT + fuente + extras en un preset */
+const THEMES = {
+  classic: { name: "🎉 Clásico", palette: "rgb", font: "arcade",
+             scanOn: true, scan: 70, mask: 60, vig: 70, noise: 50,
+             flicker: true, tilt: true, refresh: true, fish: true },
+  vaporwave: { name: "🌴 Vaporwave", palette: "sunset", font: "georgia",
+               scanOn: true, scan: 85, mask: 30, vig: 80, noise: 35,
+               flicker: false, tilt: true, refresh: true, fish: true },
+  matrix: { name: "💚 Matrix", palette: "ocean", font: "courier",
+            scanOn: true, scan: 90, mask: 15, vig: 85, noise: 65,
+            flicker: true, tilt: false, refresh: true, fish: true },
+  snes: { name: "🎮 Super Nintendo", palette: "neon", font: "arcade",
+          scanOn: false, scan: 0, mask: 45, vig: 45, noise: 25,
+          flicker: false, tilt: false, refresh: false, fish: false },
+};
+const CFG_DEFAULTS = {
+  fs: 7, font: "arcade", phrase: 4, wordSpacing: 1.0, lensStrength: 12, upper: false,
+  stroke: 2, shadow: 50,
+  timing: "beats", mode: "rgb", pulseColor: true, pulseWhite: false, flashStrength: 40,
+  scan: 70, mask: 60, vig: 70, noise: 50, flicker: true, tilt: true, refresh: true,
+  scanOn: true, fish: true, tv: true, transition: "tv",
+  autoMood: true, moodOverride: "auto",
+  // ---- nuevas funciones (todas opcionales) ----
+  theme: "classic",        // tema completo aplicado
+  translate: false,        // línea secundaria traducida
+  smartContrast: true,     // contraste por zonas vs global
+  qrEnabled: false,        // tecla Q muestra QR para votar
+  trails: true,            // estelas de nebulosa en el fluido
+  spectrum: false,         // barras ecualizador retro (solo fiesta)
+  beatBounce: false,       // la letra late con el beat (escala 1.00→1.02)
+  dropFx: true,            // explosión de partículas en el drop
+  customPal: false,        // usar paleta manual en el fluido
+  customPalCols: ["#5a2a91", "#8f3f7d", "#2a6b91", "#c46a3f", "#3f915a"],
+  globalLock: false,       // 🔒 override global: los presets no cambian nada
+  autoQuality: true,       // ⚡ bajar calidad sola si no se sostienen 100 fps
+};
+/* claves que se guardan en un preset de música: TODO, de inicio a fin */
+const PRESET_KEYS = Object.keys(CFG_DEFAULTS).filter(k =>
+  !["moodOverride","_specialTrack","autoQuality"].includes(k));   // modo y rendimiento no viajan en el preset
+const cfg = Object.assign({}, CFG_DEFAULTS);
+try {
+  const stored = JSON.parse(localStorage.getItem("fv_cfg") || "{}");
+  // sanear: si localStorage tiene tipos incorrectos (corrupción, version previa, hack),
+  // resetear el campo al default en lugar de aceptar basura.
+  for (const k of Object.keys(stored)) {
+    const def = CFG_DEFAULTS[k];
+    if (def === undefined) continue;
+    const v = stored[k];
+    if (typeof def === "number") {
+      cfg[k] = (typeof v === "number" && Number.isFinite(v)) ? v : def;
+    } else if (typeof def === "boolean") {
+      cfg[k] = !!v;
+    } else if (Array.isArray(def)) {
+      cfg[k] = Array.isArray(v) ? v : def;
+    } else {
+      cfg[k] = (typeof v === typeof def) ? v : def;
+    }
+  }
+} catch (e) { /* JSON corrupto → defaults */ }
+// La paleta debe reaccionar al beat real, no a barras antiguas guardadas.
+if (!cfg.timing) cfg.timing = "beats";
+
+/* ---------- controles ---------- */
+function togglePanel(show) {
+  const p = $("panel");
+  if (!p) return;
+  const isHidden = (show !== undefined) ? !show : (p.style.display === "none" || !p.style.display);
+  p.style.display = isHidden ? "block" : "none";
+  if (p.style.display === "block") wakeUI();
+}
+$("gear").onclick = (e) => {
+  e.stopPropagation();
+  togglePanel();
+};
+// Tecla A o coma abre/cierra panel de ajustes
+addEventListener("keydown", e => {
+  if (e.target && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
+  if ((e.key === "a" || e.key === "A" || e.key === ",") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    togglePanel();
+  }
+});
+function bindRange(id, key, valId, fmt) {
+  const el = $(id);
+  el.value = cfg[key];
+  el.oninput = e => { cfg[key] = +e.target.value; $(valId).textContent = fmt ? fmt(cfg[key]) : cfg[key]; save(); applyCfg(); };
+  if (valId) $(valId).textContent = fmt ? fmt(cfg[key]) : cfg[key];
+}
+// Versión extendida de bindRange: hace reload del /api/state al final del debounce.
+// Usado por sliders que cambian el reparto de frases (phrase).
+function bindRangeReload(id, key, valId, fmt, after) {
+  let _t = null;
+  const el = $(id);
+  el.value = cfg[key];
+  el.oninput = e => {
+    cfg[key] = +e.target.value;
+    if (valId) $(valId).textContent = fmt ? fmt(cfg[key]) : cfg[key];
+    save();
+    clearTimeout(_t);
+    _t = setTimeout(async () => {
+      try { await after(); } catch (err) {}
+    }, 350);
+  };
+  if (valId) $(valId).textContent = fmt ? fmt(cfg[key]) : cfg[key];
+}
+function bindChk(id, key) {
+  const el = $(id);
+  el.checked = !!cfg[key];
+  el.onchange = e => { cfg[key] = e.target.checked; save(); applyCfg(); };
+}
+function bindSel(id, key) {
+  const el = $(id);
+  el.value = cfg[key];
+  el.onchange = e => { cfg[key] = e.target.value; save(); applyCfg(); };
+}
+bindRange("fsRange", "fs", "fsVal");
+// TAMAÑO en vivo: repintar la letra actual al instante (sin esperar nueva frase)
+(function(){ const el=$("fsRange"); const prev=el.oninput;
+  el.oninput = e => { prev(e); if (lastShown) setLyric(lastShown, (S.lyrics||[])[lineIdx] ? (S.lyrics[lineIdx].back) : null); }; })();
+// phrase usa bindRangeReload: necesita recargar /api/state para repartir las frases
+bindRangeReload("phraseRng", "phrase", "phraseVal", v => v + " palabras", async () => {
+  const r = await fetch("/api/state?mw=" + cfg.phrase + "&force=1", { cache: "no-store" });
+  const ns = await r.json();
+  if (ns && ns.track) {
+    S = ns;
+    lineIdx = -1; lastShown = null; setLyric._last = 0;   // fuerza re-render completo
+    const L0 = S.lyrics || [];
+    while (lineIdx + 1 < L0.length && L0[lineIdx + 1].t <= pos) lineIdx++;
+    if (lineIdx >= 0 && lineIdx < L0.length) {
+      lastShown = L0[lineIdx].text;
+      setLyric(lastShown, L0[lineIdx].back);
+    }
+  }
+});
+bindRange("wordSpRng", "wordSpacing", "wordSpVal", v => v.toFixed(1) + "×");
+// ESPACIO entre palabras en vivo: repintar la línea actual al mover el slider
+(function(){ const el=$("wordSpRng"); const prev=el.oninput;
+  el.oninput = e => { prev(e); if (lastShown) setLyric(lastShown, (S.lyrics||[])[lineIdx] ? (S.lyrics[lineIdx].back) : null); }; })();
+bindRange("lensRng", "lensStrength", "lensVal");
+// el slider de lente reconstruye el mapa al final del drag (debounce 200ms)
+(function(){ const el=$("lensRng"); const prev=el.oninput;
+  let _t = null;
+  el.oninput = e => { prev(e); clearTimeout(_t); _t = setTimeout(() => { _lensBuiltFor = null; applyLens(); }, 200); }; })();
+bindRange("scanRng", "scan", "scanVal");
+bindRange("maskRng", "mask", "maskVal");
+bindRange("vigRng", "vig", "vigVal");
+bindRange("noiseRng", "noise", "noiseVal");
+bindRange("strokeRng", "stroke", "strokeVal");
+bindRange("shadowRng", "shadow", "shadowVal");
+bindRange("flashRng", "flashStrength", "flashVal", v => v + "%");
+bindChk("upperChk", "upper"); bindChk("pulseColorChk", "pulseColor"); bindChk("pulseWhiteChk", "pulseWhite");
+bindChk("flickChk", "flicker"); bindChk("tiltChk", "tilt"); bindChk("refChk", "refresh");
+bindChk("scanChk", "scanOn"); bindChk("fishChk", "fish"); bindChk("tvChk", "tv");
+bindChk("moodChk", "autoMood");
+bindSel("moodSel", "moodOverride"); bindSel("transSel", "transition");
+bindSel("fontSel", "font"); bindSel("ctiming", "timing"); bindSel("cmode", "mode");
+bindSel("themeSel", "theme");
+bindChk("trailsChk", "trails"); bindChk("spectrumChk", "spectrum");
+bindChk("bounceChk", "beatBounce"); bindChk("dropChk", "dropFx");
+bindChk("smartChk", "smartContrast"); bindChk("qrChk", "qrEnabled");
+bindChk("transChk", "translate");
+bindChk("autoQChk", "autoQuality");
+
+/* ---------- TEMAS COMPLETOS: aplicar preset de golpe ---------- */
+function applyTheme(name) {
+  const th = THEMES[name];
+  if (!th) return;
+  cfg.mode = th.palette; cfg.font = th.font;
+  cfg.scanOn = th.scanOn; cfg.scan = th.scan; cfg.mask = th.mask;
+  cfg.vig = th.vig; cfg.noise = th.noise;
+  cfg.flicker = th.flicker; cfg.tilt = th.tilt; cfg.refresh = th.refresh;
+  cfg.fish = th.fish;
+}
+$("themeSel").addEventListener("change", () => {
+  applyTheme(cfg.theme);
+  save(); applyCfg(); syncAllControls();
+});
+$("testChan").onclick = playChannel;
+$("resetBtn").onclick = () => {
+  Object.assign(cfg, CFG_DEFAULTS);
+  _presetAppliedFor = null; _presetWasActive = false;
+  cfg._specialTrack = null;
+  save(); applyCfg(); syncAllControls();
+  $("testChan").textContent = "✓ Configuración restablecida";
+  setTimeout(() => { $("testChan").textContent = "Probar transición"; }, 1500);
+};
+
+/* ---------- 💾 PRESETS POR MÚSICA (canción / artista / álbum) ----------
+   JERARQUÍA DE CONFIGURACIÓN:
+   1. cfg.globalLock = ON  → override global: NINGÚN preset toca nada
+   2. globalLock = OFF (default) → cada track se evalúa SIEMPRE en el tick
+      principal (no solo al cargar): si tiene preset, se aplica AL INSTANTE;
+      si no tiene y venimos de uno, vuelve la config habitual. */
+const PRESETS_KEY = "fv_presets";
+function loadPresets() {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || "{}"); }
+  catch (e) { return {}; }
+}
+function savePresets(p) { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); updatePresetCount(); }
+function currentTrackKeys() {
+  const t = S && S.track;
+  if (!t) return {};
+  return { song: "song:" + t.name, artist: "artist:" + t.artist,
+           album: "album:" + (t.album || "") };
+}
+function capturePreset() {
+  const p = {};
+  PRESET_KEYS.forEach(k => p[k] = cfg[k]);
+  return p;
+}
+function applyPreset(p, label) {
+  PRESET_KEYS.forEach(k => { if (p[k] !== undefined) cfg[k] = p[k]; });
+  // aplicar tema completo si viene incluido
+  if (cfg.theme && THEMES[cfg.theme]) applyTheme(cfg.theme);
+  save(); applyCfg(); syncAllControls();
+  showToast("💾 PRESET: " + label);
+  // NUNCA limpiar coverPalette aquí: applyCfg → renderState gestiona la paleta
+  // y extractCoverPalette la asignará de nuevo si el preset no fija customPal.
+}
+/* Restaurar la config habitual del usuario (sin presets): recarga fv_cfg */
+function restoreBaseConfig() {
+  try {
+    const base = JSON.parse(localStorage.getItem("fv_cfg") || "{}");
+    Object.assign(cfg, CFG_DEFAULTS, base);
+    // limpiar estado derivado de presets
+    if (!cfg.customPal) { coverPalette = null; _lastCoverKey = ""; }
+  } catch (e) { Object.assign(cfg, CFG_DEFAULTS); }
+}
+let _presetAppliedFor = null;   // track_id del último preset aplicado
+let _presetWasActive = false;   // ¿la canción anterior tenía preset?
+function findPreset() {
+  const keys = currentTrackKeys();
+  const store = loadPresets();
+  for (const k of [keys.song, keys.artist, keys.album]) {
+    if (k && store[k]) return [k, store[k]];
+  }
+  return null;
+}
+function checkPresets() {
+  if (!S || !S.track) return;
+  // OVERRIDE GLOBAL: si está activo, los presets no hacen NADA
+  if (cfg.globalLock) { _presetAppliedFor = null; _presetWasActive = false; return; }
+  const found = findPreset();
+  // OVERRIDE MANUAL DEL MODO: "Fiesta siempre" / "Fluido siempre" en el panel
+  // (o tecla F) manda sobre el preset. En "Auto" los presets deciden el modo.
+  const moodManual = cfg.moodOverride === "party" || cfg.moodOverride === "chill";
+  if (found) {
+    const [k, p] = found;
+    // se aplica SIEMPRE que el track actual no lo haya recibido aún
+    if (_presetAppliedFor !== S.track.id) {
+      _presetAppliedFor = S.track.id;
+      applyPreset(p, k.split(":")[0] === "song" ? S.track.name : k.split(":").slice(1).join(":"));
+      // MODO FIESTA/FLUIDO: solo lo cambia el preset si NO hay override manual
+      if (!moodManual) {
+        if (p.moodOverride && p.moodOverride !== "auto") mood = p.moodOverride;
+        else mood = S.mood || "party";
+      }
+      if (p.customPal && p.customPalCols) {
+        coverPalette = p.customPalCols.map(hex2rgbArr);
+        _lastCoverKey = "preset";
+        clearChillGradient();
+        stopFluid(); startFluid();
+      } else {
+        coverPalette = null; _lastCoverKey = "";
+        extractCoverPalette(S.track.cover);
+        clearChillGradient();
+        stopFluid();
+        if (isChill()) startFluid();
+      }
+      _presetWasActive = true;
+    } else if (moodManual) {
+      // override manual aplicado DESPUÉS del preset: respetarlo al vuelo
+      const wantChill = isChill();
+      if (wantChill && !fluidActive) { clearChillGradient(); startFluid(); }
+    }
+    return;
+  }
+  // esta canción NO tiene preset:
+  if (_presetWasActive) {
+    // venimos de una canción CON preset → volver a la config habitual
+    restoreBaseConfig();
+    applyCfg(); syncAllControls(); initPalPickers();
+    const serverMood = S.mood || "party";
+    mood = cfg.moodOverride !== "auto" ? cfg.moodOverride : serverMood;
+    coverPalette = null; _lastCoverKey = S.track.cover || "";
+    extractCoverPalette(S.track.cover);
+    clearChillGradient();
+    stopFluid();
+    if (isChill()) startFluid();
+    showToast("⚙ CONFIG HABITUAL");
+  }
+  _presetAppliedFor = null;
+  _presetWasActive = false;
+}
+["savePresetSong","savePresetArtist","savePresetAlbum"].forEach((id, i) => {
+  $(id).onclick = () => {
+    const kind = ["song","artist","album"][i];
+    const keys = currentTrackKeys();
+    const key = keys[kind];
+    if (!key) { showToast("⚠ SIN MÚSICA REPRODUCIENDO"); return; }
+    const store = loadPresets();
+    store[key] = capturePreset();
+    savePresets(store);
+    showToast("💾 GUARDADO (" + kind.toUpperCase() + ")");
+    _presetAppliedFor = null;   // re-evaluar al próximo tick
+  };
+});
+$("clearPresets").onclick = () => { savePresets({}); showToast("🗑 PRESETS BORRADOS"); };
+$("dumpPresets").onclick = () => {
+  const el = $("presetDump");
+  const store = loadPresets();
+  const keys = currentTrackKeys();
+  const fp = findPreset();
+  // resumen compacto: clave → diferencias respecto a los defaults
+  let summary = "";
+  const entries = Object.entries(store);
+  if (!entries.length) summary = "(no hay presets guardados)";
+  entries.forEach(([k, p], i) => {
+    summary += `\n[${i+1}] ${k}\n`;
+    const diffs = [];
+    PRESET_KEYS.forEach(pk => {
+      const def = CFG_DEFAULTS[pk], val = p[pk];
+      if (JSON.stringify(val) !== JSON.stringify(def))
+        diffs.push(`  ${pk}: ${JSON.stringify(def)} → ${JSON.stringify(val)}`);
+    });
+    summary += diffs.length ? diffs.join("\n") : "  (idéntico a los defaults)";
+  });
+  el.style.display = "block";
+  el.textContent =
+    `PRESETS GUARDADOS: ${entries.length}\n${summary}\n\n` +
+    `CLAVES DE LA CANCIÓN ACTUAL:\n${JSON.stringify(keys, null, 1)}\n` +
+    `¿COINCIDE ALGUNO? → ${fp ? "SÍ: " + fp[0] : "NINGUNO"}\n` +
+    `Override global (globalLock): ${cfg.globalLock}`;
+};
+function updatePresetCount() {
+  const n = Object.keys(loadPresets()).length;
+  const el = $("presetCount");
+  if (el) el.textContent = n ? n + " preset(s) guardado(s)" : "";
+}
+
+/* ---------- 🎨 PALETA MANUAL DEL FLUIDO ---------- */
+function initPalPickers() {
+  const wrap = $("palPickers");
+  wrap.innerHTML = "";
+  cfg.customPalCols.forEach((hex, i) => {
+    const inp = document.createElement("input");
+    inp.type = "color"; inp.value = hex;
+    inp.style.cssText = "width:44px;height:36px;border:none;border-radius:8px;background:none;cursor:pointer;padding:0";
+    inp.oninput = e => {
+      cfg.customPalCols[i] = e.target.value;
+      save();
+      if (cfg.customPal && isChill()) {
+        coverPalette = cfg.customPalCols.map(hex2rgbArr);
+        _lastCoverKey = "custom";
+        clearChillGradient(); startFluid();
+      }
+    };
+    wrap.appendChild(inp);
+  });
+}
+bindChk("customPalChk", "customPal");
+bindChk("globalLockChk", "globalLock");
+$("customPalChk").addEventListener("change", () => {
+  if (cfg.customPal) {
+    coverPalette = cfg.customPalCols.map(hex2rgbArr);
+    _lastCoverKey = "custom";
+    clearChillGradient();
+    if (isChill()) startFluid();
+    showToast("🎨 PALETA MANUAL ACTIVA");
+  } else {
+    coverPalette = null; _lastCoverKey = "";   // volver a la portada
+    extractCoverPalette(S && S.track && S.track.cover);
+  }
+});
+$("palRandom").onclick = () => {
+  cfg.customPalCols = cfg.customPalCols.map(() =>
+    "#" + [0,0,0].map(() => Math.floor(Math.random()*256).toString(16).padStart(2,"0")).join(""));
+  save(); initPalPickers();
+  if (cfg.customPal && isChill()) {
+    coverPalette = cfg.customPalCols.map(hex2rgbArr);
+    _lastCoverKey = "custom";
+    clearChillGradient(); startFluid();
+  }
+};
+function hex2rgbArr(hx) {
+  hx = hx.replace("#","");
+  return [parseInt(hx.slice(0,2),16), parseInt(hx.slice(2,4),16), parseInt(hx.slice(4,6),16)];
+}
+/* Sincronizar TODOS los controles del panel con cfg (usado por reset y todo/nada) */
+function syncAllControls() {
+  [["fsRange","fs","fsVal"],["phraseRng","phrase","phraseVal"],["wordSpRng","wordSpacing","wordSpVal"],
+   ["scanRng","scan","scanVal"],["maskRng","mask","maskVal"],
+   ["vigRng","vig","vigVal"],["noiseRng","noise","noiseVal"],
+   ["strokeRng","stroke","strokeVal"],["shadowRng","shadow","shadowVal"],
+   ["flashRng","flashStrength","flashVal"]].forEach(([id, key, valId]) => {
+    $(id).value = cfg[key]; $(valId).textContent = cfg[key];
+  });
+  [["upperChk","upper"],["pulseColorChk","pulseColor"],["pulseWhiteChk","pulseWhite"],
+   ["flickChk","flicker"],["tiltChk","tilt"],["refChk","refresh"],
+   ["scanChk","scanOn"],["fishChk","fish"],["tvChk","tv"],["moodChk","autoMood"],
+   ["globalLockChk","globalLock"],["customPalChk","customPal"]].forEach(([id, key]) => {
+    $(id).checked = !!cfg[key];
+  });
+  [["moodSel","moodOverride"],["transSel","transition"],
+   ["fontSel","font"],["ctiming","timing"],["cmode","mode"],["themeSel","theme"]].forEach(([id, key]) => {
+    $(id).value = cfg[key];
+  });
+  [["trailsChk","trails"],["spectrumChk","spectrum"],["bounceChk","beatBounce"],
+   ["dropChk","dropFx"],["smartChk","smartContrast"],["qrChk","qrEnabled"],
+   ["transChk","translate"],["autoQChk","autoQuality"]].forEach(([id, key]) => {
+    $(id).checked = !!cfg[key];
+  });
+}
+$("loginBtn").onclick = () => { location.href = S && S.logged_in ? "/logout" : "/login"; };
+$("logoutBtn").onclick = () => { location.href = "/logout"; };
+$("bigLogin").onclick = () => { location.href = "/login"; };
+
+/* ---------- modo fiesta/fluido: tecla F (selector visual eliminado) ----------
+   La tecla F y el selector "Modo visual" son OVERRIDE MANUAL: lo que eliges
+   manda sobre los presets (igual que globalLock pero solo para el modo). */
+function toggleMood() {
+  // alterna entre party y chill; si estaba en auto, fuerza el contrario del actual
+  cfg.moodOverride = mood === "chill" ? "party" : "chill";
+  save(); applyCfg();
+  showToast(cfg.moodOverride === "chill" ? "🌊 MODO FLUIDO" : "🎉 MODO FIESTA");
+}
+document.addEventListener("keydown", e => {
+  if ((e.key === "f" || e.key === "F") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    toggleMood();
+  }
+});
+
+/* ---------- toast: aviso efímero en pantalla ---------- */
+let _toastTimer = null;
+function showToast(text) {
+  let el = $("toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add("on");
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove("on"), 1400);
+}
+
+/* ---------- Retro CRT: activar TODO o NADA de un golpe ---------- */
+const CRT_KEYS = ["scanOn", "flicker", "tilt", "refresh", "fish"];
+$("crtAll").onclick = () => {
+  const allOn = CRT_KEYS.every(k => cfg[k]);
+  const target = !allOn;
+  CRT_KEYS.forEach(k => cfg[k] = target);
+  // también subir/bajar los sliders de intensidad
+  ["scan", "mask", "vig", "noise"].forEach(k => {
+    if (target && !cfg[k]) cfg[k] = 60;
+    if (!target) cfg[k] = 0;
+  });
+  save(); applyCfg();
+  syncCrtControls();
+  syncAllControls();
+};
+function syncCrtControls() {
+  // reflejar el estado en los checkboxes y sliders del panel
+  [["scanChk","scanOn"],["flickChk","flicker"],["tiltChk","tilt"],
+   ["refChk","refresh"],["fishChk","fish"]].forEach(([id, key]) => $(id).checked = !!cfg[key]);
+  [["scanRng","scan","scanVal"],["maskRng","mask","maskVal"],
+   ["vigRng","vig","vigVal"],["noiseRng","noise","noiseVal"]].forEach(([id, key, valId]) => {
+    $(id).value = cfg[key]; $(valId).textContent = cfg[key];
+  });
+}
+
+let _saveTimer = null;
+let _savePending = false;
+function save() {
+  // throttle: muchos cambios seguidos (sliders) → escribir a localStorage a lo sumo
+  // cada 500ms, agrupando todos los cambios intermedios.
+  _savePending = true;
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    if (!_savePending) return;
+    _savePending = false;
+    const { _specialTrack, ...persist } = cfg;
+    try { localStorage.setItem("fv_cfg", JSON.stringify(persist)); } catch (e) {}
+  }, 500);
+}
+function applyCfg() {
+  // si el usuario desactiva la calidad automática, usar siempre la máxima
+  if (!cfg.autoQuality && _perf.level !== 3) setQuality(3);
+  const r = document.documentElement.style;
+  r.setProperty("--fs", cfg.fs + "vw");
+  r.setProperty("--lyric-font", FONTS[cfg.font] || FONTS.arcade);
+  r.setProperty("--scan-op", cfg.scanOn ? (cfg.scan / 100 * 0.45).toFixed(3) : "0");
+  r.setProperty("--mask-op", (cfg.mask / 100 * 0.30).toFixed(3));
+  r.setProperty("--vig-op", (cfg.vig / 100 * 0.80).toFixed(3));
+  r.setProperty("--noise-op", (cfg.noise / 100 * 0.15).toFixed(3));
+  // borde del texto (stroke): 4 sombras duras alrededor, grosor configurable
+  const st = +cfg.stroke || 0;
+  const strokeShadow = st > 0
+    ? `, ${st}px 0 0 rgba(0,0,0,.55), -${st}px 0 0 rgba(0,0,0,.55), 0 ${st}px 0 rgba(0,0,0,.55), 0 -${st}px 0 rgba(0,0,0,.55)`
+    : "";
+  // sombra proyectada configurable
+  const sh = (+cfg.shadow || 0) / 100;
+  const shadowShadow = sh > 0 ? `, 0 ${(2 + sh * 8).toFixed(1)}px ${(6 + sh * 14).toFixed(1)}px rgba(0,0,0,${(sh * 0.7).toFixed(2)})` : "";
+  r.setProperty("--lyric-shadow", `0 0 2.5vmin rgba(255,255,255,.14)${strokeShadow}${shadowShadow}`);
+  document.body.classList.toggle("flicker-off", !cfg.flicker);
+  $("screen").classList.toggle("tilt-off", !cfg.tilt);
+  $("refresh").classList.toggle("hidden-refresh", !cfg.refresh);
+  $("crt").style.display = cfg.scanOn ? "" : "none";   // scanlines OFF = sin capa CRT
+  // mueble de TV vintage ON/OFF: la pantalla vuelve a ocupar todo el viewport
+  document.body.classList.toggle("no-tv", !cfg.tv);
+  const ly = $("lyrics");
+  document.body.classList.toggle("fisheye", !!cfg.fish);   // ojo de pez GLOBAL
+  applyLens();   // mantener la lente coherente al cambiar config/tema
+  document.body.classList.toggle("beat-bounce", !!cfg.beatBounce);  // rebote al beat
+  ly.classList.toggle("upper", cfg.upper);
+  // espectro CRT: crear barras una vez, mostrar/ocultar según modo y config
+  initSpectrum();
+  $("spectrum").classList.toggle("on", !!cfg.spectrum && !isChill());
+  // QR overlay solo si está activado
+  if (!cfg.qrEnabled) $("qrOverlay").classList.remove("on");
+  // canvas de partículas listo para drops
+  initFxCanvas();
+  applyEggFont();
+  // REGLAS POR CANCIÓN (Die For You → vaporwave fluido) ANTES de presets,
+  // y presets SIEMPRE (aunque applyTrackRules haya actuado: un preset puede
+  // querer sobreescribir incluso la canción especial).
+  applyTrackRules();
+  if (S && S.track) {
+    checkPresets();   // presets guardados por canción/artista/álbum (prioridad máxima)
+    // OVERRIDE MANUAL del modo: "Fiesta siempre"/"Fluido siempre" manda sobre
+    // presets y reglas. Aplicarlo al vuelo (arranca/para el fluido según toque).
+    const moodManual = cfg.moodOverride === "party" || cfg.moodOverride === "chill";
+    if (_presetAppliedFor !== S.track.id || moodManual) {
+      const serverMood = S.mood || "party";
+      mood = moodManual ? cfg.moodOverride : serverMood;
+      if (mood === "chill") {
+        if (!coverPalette) extractCoverPalette(S.track.cover);
+        clearChillGradient();
+        startFluid();
+      } else {
+        stopFluid();
+      }
+    }
+  }
+  updateMoodSwitch();
+}
+
+/* ---------- REGLAS POR CANCIÓN: overrides automáticos ---------- */
+/* "Die For You" de Joji → SIEMPRE fluido + tema Vaporwave + paleta oscura profunda */
+function isDieForYou() {
+  const t = (S && S.track) || {};
+  return /die\s*for\s*you/i.test(t.name || "") && /joji/i.test(t.artist || "");
+}
+/* Paleta oscura y profunda para el modo fluido especial (azules/violetas noche) */
+const DARK_DEEP_PALETTE = [[18,10,45],[30,15,70],[8,25,60],[50,20,90],[12,35,80]];
+
+function applyTrackRules() {
+  if (!S || !S.track) return false;
+  const wasSpecial = cfg._specialTrack === S.track.id;
+  if (isDieForYou()) {
+    if (!wasSpecial) {
+      cfg._specialTrack = S.track.id;
+      // forzar fluido + vaporwave + paleta oscura. Si el usuario ha puesto override
+      // manual del modo (party/chill), respetarlo — solo aplicamos theme + paleta.
+      if (cfg.moodOverride === "auto") {
+        cfg.moodOverride = "chill";
+      }
+      cfg.theme = "vaporwave";
+      applyTheme("vaporwave");
+      save(); applyCfg(); syncAllControls();
+      coverPalette = DARK_DEEP_PALETTE.map(c => c.slice());
+      _lastCoverKey = "dark-deep";
+      showToast("🌙 DIE FOR YOU — VAPORWAVE");
+      clearChillGradient();
+      if (isChill()) startFluid();   // relanzar fluido con la paleta oscura YA
+    }
+    return true;
+  }
+  if (wasSpecial) { cfg._specialTrack = null; }   // salió de la canción especial
+  return false;
+}
+
+/* ---------- ESPECTRO DE BARRAS CRT ---------- */
+let _specBars = [];
+function initSpectrum() {
+  if (_specBars.length) return;
+  const sp = $("spectrum");
+  for (let i = 0; i < 24; i++) {
+    const b = document.createElement("i");
+    sp.appendChild(b);
+    _specBars.push({ el: b, ph: Math.random() * Math.PI * 2, spd: 1.5 + Math.random() * 2.5 });
+  }
+}
+function tickSpectrum(t, energy) {
+  // barras sintéticas al ritmo: altura pseudo-aleatoria suavizada por seno
+  for (const b of _specBars) {
+    const v = 0.25 + 0.35 * Math.abs(Math.sin(b.ph + t * b.spd)) + energy * 0.35;
+    b.el.style.height = Math.min(100, v * 100) + "%";
+  }
+}
+
+/* ---------- 💥 EXPLOSIÓN DE PARTÍCULAS EN DROPS ---------- */
+let _fxParts = [];
+const FX_MAX = 90;
+
+function initFxCanvas() {
+  const cv = $("fxCanvas");
+  // resolución reducida: las partículas son cuadrados pequeños, se ven igual
+  const w = Math.max(2, Math.round(innerWidth / 2));
+  const h = Math.max(2, Math.round(innerHeight / 2));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+}
+
+function explodeDrop() {
+  if (!cfg.dropFx || _perf.level === 0) return;
+  initFxCanvas();
+  const cv = $("fxCanvas");
+  const pal = PALETTES[cfg.mode] || PALETTES.rgb;
+  // centro del CANVAS (antes se usaba innerWidth/2, que en un canvas a media
+  // resolución cae en el borde derecho y la explosión salía descuadrada)
+  const cx = cv.width / 2, cy = cv.height / 2;
+  const n = _perf.level >= 2 ? 60 : 24;
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 2 + Math.random() * 5;
+    _fxParts.push({
+      x: cx, y: cy,
+      vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd - 1.5,
+      life: 1,
+      color: pal[Math.floor(Math.random() * pal.length)],
+      size: 2 + Math.random() * 4,
+    });
+  }
+  if (_fxParts.length > FX_MAX) _fxParts.splice(0, _fxParts.length - FX_MAX);
+}
+
+/* Dibuja UN frame de partículas. Ya NO programa su propio rAF: lo llama rafLoop(). */
+function fxStep() {
+  const cv = $("fxCanvas");
+  if (!cv) return;
+  if (!_fxParts.length) {
+    // limpiar una sola vez al morir la última partícula (si no, quedan pegadas)
+    if (fxStep._dirty) {
+      cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);
+      fxStep._dirty = false;
+    }
+    return;
+  }
+  fxStep._dirty = true;
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  _fxParts = _fxParts.filter(p => p.life > 0);
+  for (const p of _fxParts) {
+    p.x += p.vx; p.y += p.vy;
+    p.vy += 0.12;                       // gravedad (canvas a media resolución)
+    p.vx *= 0.985; p.life -= 0.012;
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- 📱 QR GIGANTE (tecla Q) ---------- */
+function toggleQR() {
+  if (!cfg.qrEnabled) return;
+  const ov = $("qrOverlay");
+  if (ov.classList.contains("on")) { ov.classList.remove("on"); return; }
+  // QR simple con la URL de Spotify del track actual (api.qrserver.com, gratis)
+  const url = S && S.track && S.track.id
+    ? "https://open.spotify.com/track/" + S.track.id : "https://open.spotify.com/";
+  $("qrBox").innerHTML =
+    '<img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data='
+    + encodeURIComponent(url) + '" width="300" height="300" alt="QR">';
+  ov.classList.add("on");
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "q" || e.key === "Q") toggleQR();
+  if (e.key === "Escape") $("qrOverlay").classList.remove("on");
+});
+
+/* ---------- 🌍 TRADUCCIÓN de letras extranjeras (línea secundaria) ----------
+   MyMemory API gratuita. Caché permanente por texto origen. */
+const _trCache = {};
+async function translateLine(text) {
+  if (!cfg.translate || !text) return "";
+  if (_trCache[text]) return _trCache[text];
+  try {
+    const r = await fetch("https://api.mymemory.translated.net/get?q="
+      + encodeURIComponent(text) + "&langpair=en|es", { cache: "no-store" });
+    const d = await r.json();
+    const tr = ((d.responseData || {}).translatedText || "").trim();
+    if (tr && !/MYMEMORY WARNING/i.test(tr)) _trCache[text] = tr;
+    return _trCache[text] || "";
+  } catch (e) { return ""; }
+}
+
+/* ---------- CONTRASTE POR ZONAS: medir la franja real donde va la letra ---------- */
+/* CONTRASTE GLOBAL: promedio de TODO el canvas (modo simple) — usa el color dominante
+   de la paleta como proxy (evita lectura GPU→CPU de getImageData cada frame) */
+function setFluidContrastGlobal() {
+  // proxy: inferir luminosidad del color de fondo actual (palette-based)
+  const bg = $("bg").style.backgroundColor || "rgb(255,23,68)";
+  const m = bg.match(/(\d+)/g);
+  if (m && m.length >= 3) {
+    const lum = (0.2126 * +m[0] + 0.7152 * +m[1] + 0.0722 * +m[2]) / 255;
+    setTextColor(lum > 0.48 ? "#101018" : "#ffffff");
+  }
+}
+
+/* ---------- 🐰 easter egg EOO (Bad Bunny): letra real con efectos especiales ---------- */
+let eggActive = false;
+
+function isEggBlock(text) {
+  // Chequéate la historia → bloque del easter egg
+  return /Chequ[eé]ate la historia/i.test(text || "");
+}
+function isEooText(text) {
+  // EO o EOO como PALABRA COMPLETA → la O crece
+  return /\bEOOO?\b/i.test(text || "");
+}
+function isEggText(text) {
+  // Perreo / Tra-tra → efectos especiales (Impact + flip B/N), letra intacta
+  return /Perreo|Tra-tra/i.test(text || "");
+}
+function isEggLine(text) {
+  // Cualquier línea que dispara el easter egg de efectos
+  return isEooText(text) || isEggText(text) || isEggBlock(text);
+}
+
+function enterEgg() {
+  if (eggActive) return;
+  eggActive = true;
+  // Easter egg = SOLO EFECTOS: fondo negro, letra blanca, sin CRT
+  $("screen").style.background = "#000";
+  $("crt").style.display = "none";
+  $("noise").style.display = "none";
+  $("refresh").style.display = "none";
+  eggFlip(false);
+}
+
+function exitEgg() {
+  if (!eggActive) return;
+  eggActive = false;
+  if (eggFlipTimer) { clearInterval(eggFlipTimer); eggFlipTimer = null; }
+  if (_growingTimer) { clearInterval(_growingTimer); _growingTimer = null; }
+  // RESTAURA CRT + contraste dinámico normal
+  $("screen").style.background = "";
+  $("crt").style.display = "";
+  $("noise").style.display = "";
+  $("refresh").style.display = "";
+  $("lCur").style.color = "";
+}
+
+// Flip blanco↔negro puro (sin grises): invierte fondo y letra cada 900ms
+let eggFlipTimer = null;
+function eggFlip(start) {
+  if (eggFlipTimer) { clearInterval(eggFlipTimer); eggFlipTimer = null; }
+  if (!start) return;
+  let white = false;
+  const apply = () => {
+    // blanco: fondo negro/letra blanca · negro: fondo blanco/letra negra
+    $("screen").style.background = white ? "#fff" : "#000";
+    $("lCur").style.color = white ? "#000" : "#fff";
+    white = !white;
+  };
+  apply();
+  eggFlipTimer = setInterval(apply, 900);
+}
+
+let _growingTimer = null;
+function startGrowingE() {
+  // E → EO → EOO → EOOO… hasta que se salga de la pantalla (letra real intacta)
+  stopGrowingE();
+  eggFlip(true);   // flip blanco↔negro activo
+  const el = $("lCur");
+  el.textContent = "E";
+  let oCount = 0;
+  _growingTimer = setInterval(() => {
+    oCount++;
+    el.textContent = "E" + "O".repeat(oCount);
+    if (el.scrollWidth > el.offsetWidth) { oCount = 0; el.textContent = "E"; }
+  }, 85);
+}
+function stopGrowingE() {
+  if (_growingTimer) { clearInterval(_growingTimer); _growingTimer = null; }
+}
+
+function applyEggFont() {
+  const r = document.documentElement.style;
+  r.setProperty("--lyric-font", eggActive ? "Impact,'Arial Black',sans-serif" : (FONTS[cfg.font] || FONTS.arcade));
+}
+/* ---------- OJO DE PEZ REAL: lente por PÍXEL (SVG inline + feDisplacementMap) ------
+   Mapa de desplazamiento generado en canvas e inyectado en un <feImage> inline.
+   Deforma los pixeles respecto al CENTRO DE LA PANTALLA: funciona igual con
+   1 o 5 líneas. Técnica verificada en Chrome desktop y móvil. */
+/* ---------- OJO DE PEZ REAL: lente por PÍXEL (SVG filter) ----------
+   El feDisplacementMap se ejecuta EN CADA FRAME sobre toda el área del filtro.
+   Para minimizar el coste:
+   1. Resolución del mapa de desplazamiento: 96x96 (suficiente para deformación
+      suave — el navegador interpola linealmente al samplear). Un mapa más grande
+      solo se ve diferente en zooms extremos; 96x96 es invisible para el ojo.
+   2. El mapa se cachea en Uint8ClampedArray y se inyecta como data URI solo cuando
+      cambian dimensiones o amplitud.
+   3. SVG filter fuera de pantalla (width=0 height=0) — solo se usa como definición,
+      el navegador lo aplica al #lensTarget via CSS filter.
+   5. Reescritura del mapa con toDataURL solo cuando cambia; en cambio de slider
+      se rebuildea solo al final del debounce (no en cada oninput). */
+let _lensBuiltFor = null;
+let _lensBuiltAmp = null;
+let _lensMapDataURI = null;   // cache del data URI para no re-encodear cada frame
+
+function buildLens() {
+  const sc = document.getElementById("screen").getBoundingClientRect();
+  const amp = Math.round(Math.min(sc.width, sc.height) * ((cfg.lensStrength == null ? 18 : +cfg.lensStrength) / 100));
+  const key = Math.round(sc.width) + "x" + Math.round(sc.height);
+  if (_lensBuiltFor === key && _lensBuiltAmp === amp && document.getElementById("lensMap")) return;
+  _lensBuiltFor = key;
+  _lensBuiltAmp = amp;
+  const NS = "http://www.w3.org/2000/svg";
+  let svg = document.getElementById("lensSvg");
+  if (!svg) {
+    svg = document.createElementNS(NS, "svg");
+    svg.id = "lensSvg";
+    svg.setAttribute("width", "0"); svg.setAttribute("height", "0");
+    svg.style.position = "fixed"; svg.style.left = "-9999px";
+    document.body.appendChild(svg);
+  }
+  // Definición del filtro: ancho/alto iguales a la pantalla para que el mapa
+  // se estire exactamente al área del cristal.
+  const w = Math.round(sc.width), h = Math.round(sc.height);
+  svg.innerHTML =
+    `<filter id="lens" x="0" y="0" width="${w}" height="${h}" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">` +
+    `<feImage id="lensMap" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="map"/>` +
+    // feGaussianBlur suaviza el mapa → muestreo más estable cuando el navegador
+    // interpola. Coste despreciable (se hace 1 vez al construir).
+    `<feGaussianBlur in="map" stdDeviation="6" result="mapBlur"/>` +
+    `<feDisplacementMap in="SourceGraphic" in2="mapBlur" scale="${amp}" ` +
+    `xChannelSelector="R" yChannelSelector="G"/>` +
+    `</filter>`;
+  // Construir mapa de barril 96x96 (256x256 era overkill)
+  const MW = 96, MH = 96;
+  const cv = document.createElement("canvas"); cv.width = MW; cv.height = MH;
+  const g = cv.getContext("2d");
+  const img = g.createImageData(MW, MH);
+  const d = img.data;
+  for (let y = 0; y < MH; y++) {
+    const vy = (y - MH / 2) / (MH / 2);
+    for (let x = 0; x < MW; x++) {
+      const vx = (x - MW / 2) / (MW / 2);
+      const rn = Math.min(1, Math.sqrt(vx * vx + vy * vy));
+      const m = rn * rn;
+      const o2 = (y * MW + x) * 4;
+      d[o2]     = Math.max(0, Math.min(255, Math.round(128 + vx * m * 127)));
+      d[o2 + 1] = Math.max(0, Math.min(255, Math.round(128 + vy * m * 127)));
+      d[o2 + 2] = 128;
+      d[o2 + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  _lensMapDataURI = cv.toDataURL();
+  const fi = svg.querySelector("feImage");
+  fi.setAttribute("href", _lensMapDataURI);
+  fi.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", _lensMapDataURI);
+}
+
+function applyLens() {
+  const t = document.getElementById("lensTarget");
+  if (!t) return;
+  const amp = +((cfg.lensStrength == null ? 18 : cfg.lensStrength));
+  // la lente por píxel es el efecto más caro: se apaga en calidad mínima
+  const shouldLens = cfg.fish && !eggActive && _perf.level >= 1 && amp > 0;
+  const key = shouldLens + "|" + amp;
+  if (key === applyLens._key) return;     // no reescribir el filtro en cada línea
+  applyLens._key = key;
+  if (shouldLens) {
+    buildLens();
+    t.style.filter = "url(#lens)";
+    document.body.classList.add("lens-live");
+  } else {
+    t.style.filter = "";
+    document.body.classList.remove("lens-live");
+  }
+}
+
+/* ---------- OJO DE PEZ: solo filtro por píxel (lente SVG). El ojo de pez
+   por glifo fue DESCONTINUADO: deformar cada letra con transform 3D hace que
+   los caracteres centrales crezcan y los laterales se encojan/roten, dando
+   el efecto "aAAa" que rompía la legibilidad. Ahora la deformación la hace
+   exclusivamente el feDisplacementMap (filtro por píxel) sobre #lensTarget,
+   y el texto va SIEMPRE plano. Esta función solo respeta wordSpacing. */
+function applyFisheye(el, text) {
+  el.textContent = "";
+  text.split(/(\s+)/).forEach(part => {
+    if (/^\s+$/.test(part)) {
+      const sp = document.createElement("span");
+      sp.textContent = "\u00A0\u00A0";
+      const ws = (cfg.wordSpacing == null ? 1 : +cfg.wordSpacing);
+      sp.style.cssText = `display:inline-block;margin-left:${(0.1*ws).toFixed(3)}em;margin-right:${(0.1*ws).toFixed(3)}em;width:${(0.6*ws).toFixed(3)}em`;
+      el.appendChild(sp);
+    } else if (part) {
+      el.appendChild(document.createTextNode(part));
+    }
+  });
+}
+
+
+/* ---------- control manual: distancia entre palabras ---------- */
+
+function setLyric(text, back, sizeVw) {
+  const fs = sizeVw || cfg.fs;      // el título usa 5vw fijos, la letra el slider
+  $("lCur").style.whiteSpace = "pre-wrap";   // conservar espacios entre spans
+  $("lCur").style.lineHeight = "";
+  // Repintar el tamaño en vivo: aplicamos fs por CSS var (no inline) y forzamos
+  // el font-size inline para sobrescribir cualquier valor residual anterior.
+  $("lCur").style.fontSize = "";
+  $("lBack").style.fontSize = "";   // subtítulo vuelve a heredar calc(var(--fs)*.5)
+  document.documentElement.style.setProperty("--fs", fs + "vw");
+  $("lCur").style.fontSize = "calc(" + fs + "vw)";
+  if (!eggActive) { $("lCur").style.color = "" }   // restaurar contraste dinámico
+  // la deformación del ojo de pez la hace el filtro por píxel (lente SVG).
+  // El texto va SIEMPRE plano, garantizado.
+  applyLens();
+  $("lCur").style.textAlign = "center";
+  $("lBack").style.textAlign = "center";
+  applyFisheye($("lCur"), text);
+  // SUBTÍTULO: backs/paréntesis o TRADUCCIÓN como línea secundaria opaca
+  const backEl = $("lBack");
+  if (back) {
+    applyFisheye(backEl, back);
+    backEl.style.display = "block";
+  } else if (cfg.translate && /[a-z]{3,}/i.test(text)) {
+    // sin back: intentar traducción (async; cuando llegue, mostrar si es útil)
+    backEl.textContent = "…";
+    backEl.style.display = "block";
+    translateLine(text).then(tr => {
+      if (tr && tr.toLowerCase() !== (text || "").toLowerCase()) {
+        applyFisheye(backEl, tr);
+        backEl.style.display = "block";
+      } else {
+        backEl.textContent = "";
+        backEl.style.display = "none";
+      }
+    });
+  } else {
+    backEl.textContent = "";
+    backEl.style.display = "none";
+  }
+}
+
+/* Pinta una línea + easter egg en un único sitio (antes había 3 copias). */
+function showLine(text, back, sizeVw) {
+  lastShown = text;
+  const wasEgg = eggActive;
+  const nowEgg = isEggLine(text);
+  eggActive = nowEgg;
+  if (nowEgg && !wasEgg) enterEgg();
+  else if (!nowEgg && wasEgg) exitEgg();
+  applyEggFont();
+  setLyric(text, back, sizeVw);
+  stopGrowingE();
+  if (nowEgg && isEooText(text)) startGrowingE();
+}
+
+/* ---------- selector rápido 🎉 / 🌊 ---------- */
+function updateMoodSwitch() {
+  $("moodParty").classList.toggle("active", cfg.moodOverride === "party");
+  $("moodChill").classList.toggle("active", cfg.moodOverride === "chill");
+  // en auto: iluminar suave ambos (el sistema decide por canción)
+  if (cfg.moodOverride === "auto") {
+    $("moodParty").style.opacity = mood === "chill" ? ".4" : ".9";
+    $("moodChill").style.opacity = mood === "chill" ? ".9" : ".4";
+    $("moodParty").classList.remove("active");
+    $("moodChill").classList.remove("active");
+    if (mood === "chill") $("moodChill").classList.add("active");
+    else $("moodParty").classList.add("active");
+  }
+}
+$("moodParty").onclick = () => { cfg.moodOverride = "party"; save(); applyCfg(); };
+$("moodChill").onclick = () => { cfg.moodOverride = "chill"; save(); applyCfg(); };
+
+/* ---------- estado (sync agresivo: 4 polls/s + extrapolación local) ---------- */
+let _tickBusy = false;
+async function tick() {
+  if (_tickBusy) return;   // el tick en curso ya reprograma el siguiente
+  _tickBusy = true;
+  try {
+    const r = await fetch("/api/sync", { cache: "no-store" });
+    if (!r.ok) throw 0;
+    const sync = await r.json();
+    setSyncLed(sync.health === "synced" ? "synced" : "waiting");
+    let serverPos = (sync.progress_ms || 0) / 1000;
+    if (sync.is_playing && sync.ts) {
+      // sync.ts viene de Python time.time() (epoch Unix); performance.now()
+      // empieza en 0 por pestaña y NO se puede comparar. Date.now() sí comparte epoch.
+      const age = Math.max(0, Date.now() - (sync.ts * 1000));
+      serverPos += age / 1000;
+    }
+    const serverPlaying = !!sync.is_playing;
+    const sameTrack = S && S.track && S.track.id && sync.track_id && S.track.id === sync.track_id;
+    // BUG presets: si el track cambió, avisar ya (checkPresets se llama tras recargar)
+    if (S && S.track && sync.track_id && S.track.id !== sync.track_id) {
+      _presetAppliedFor = null;   // fuerza re-evaluación del preset para el nuevo track
+    }
+    const samePlaying = serverPlaying === playing;
+    // letra activa devuelta por el server (autoridad: posición real de Spotify)
+    if (sync.lyric && S && S.lyrics) { S.lyric = sync.lyric; }
+    if (S && S.track && sameTrack && samePlaying) {
+      // misma canción, mismo estado → corrección agresiva del drift
+      const drift = serverPos - pos;
+      if (Math.abs(drift) > 30) pos = serverPos;
+      else if (Math.abs(drift) > 0.5) pos = serverPos;
+      else pos += drift * 0.5;
+      playing = serverPlaying;
+      speed = serverPlaying ? 1 : 0;
+      posAt = performance.now();
+      checkPresets();   // evaluar SIEMPRE (barato: findPreset es un lookup)
+    } else if (S && S.track && sameTrack && !samePlaying) {
+      // misma canción pero cambió pausa → solo actualizar estado, no recargar
+      playing = serverPlaying;
+      speed = serverPlaying ? 1 : 0;
+      pos = serverPos;
+      posAt = performance.now();
+    } else {
+      // cambió canción o primer load → recargar estado completo
+      // Transición INMEDIATA al detectar el corte: tapa el tiempo de carga
+      // de letras/análisis de la canción nueva (que puede tardar 1-2s)
+      if (S && S.track && sync.track_id && S.track.id !== sync.track_id && curTrack !== null) {
+        playTransitionFor(sync.track_id);
+        // congelar la letra vieja bajo la transición: limpiar punteros ya
+        lineIdx = -1; beatPtr = 0; barPtr = 0; secPtr = 0; lastShown = null;
+      }
+      const r2 = await fetch("/api/state?mw=" + cfg.phrase, { cache: "no-store" });
+      S = await r2.json();
+      playing = !!S.is_playing;
+      speed = playing ? 1 : 0;
+      pos = serverPos;
+      posAt = performance.now();
+      // inicializar punteros de ritmo según la posición actual
+      const B = S.beats||[], BR = S.bars||[], SE = S.sections||[];
+      while(beatPtr < B.length && B[beatPtr] <= pos) beatPtr++;
+      while(barPtr  < BR.length && BR[barPtr]  <= pos) barPtr++;
+      while(secPtr  < SE.length && SE[secPtr]  <= pos) secPtr++;
+      renderState();
+      checkPresets();   // presets por canción/artista/álbum en CADA carga de track
+      onColor();
+    }
+  } catch (e) {
+    setSyncLed("offline");
+    try {
+      const r = await fetch("/api/state?mw=" + cfg.phrase, { cache: "no-store" });
+      S = await r.json();
+      if (S && S.track) {
+        const serverPos = (S.progress_ms || 0) / 1000;
+        playing = !!S.is_playing;
+        speed = playing ? 1 : 0;
+        const drift = serverPos - pos;
+        if (Math.abs(drift) > 0.5) pos = serverPos;
+        else pos += drift * 0.5;
+        posAt = performance.now();
+        renderState();
+      } else {
+        showMsg("CONECTANDO…");
+      }
+    } catch (e2) { /* servidor apagado */ }
+  } finally {
+    _tickBusy = false;
+    setTimeout(tick, 250);   // un único programador: el tick en curso
+  }
+}
+
+function setSyncLed(state) {
+  const el = $("syncLed"), txt = $("syncText");
+  if (!el || !txt) return;
+  el.className = state;
+  txt.textContent = state === "synced" ? "SYNC" : state === "waiting" ? "WAIT" : "OFFLINE";
+}
+
+function showMsg(t) {
+  $("msg").textContent = t; $("msg").style.display = "flex";
+  $("lyrics").style.display = "none"; $("lineNone").style.display = "none";
+}
+function hideMsg() { $("msg").style.display = "none"; $("lyrics").style.display = "flex"; }
+
+function renderState() {
+  if (!S) { showMsg("CONECTANDO…"); return; }
+  $("loginBtn").textContent = S.logged_in ? "✓ CONECTADO (RECONECTAR)" : "CONECTAR CON SPOTIFY";
+  $("logoutBtn").style.display = S.logged_in ? "block" : "none";
+  if (S.error === "premium") { showMsg("⚠️ SPOTIFY RECHAZA LEER EL REPRODUCTOR.\nTU CUENTA NECESITA PREMIUM."); return; }
+  if (S.error === "reconnect") { showMsg("🔑 SESIÓN EXPIRADA.\nPULSA «CONECTAR CON SPOTIFY» PARA RECONECTAR."); return; }
+  if (S.error === "ratelimit") { showMsg("⏳ DEMASIADAS PETICIONES A SPOTIFY… ESPERANDO."); return; }
+  $("bigLogin").style.display = S.logged_in ? "none" : "block";
+  if (!S.track) { showMsg("🎧 REPRODUCE UNA CANCIÓN EN SPOTIFY\nY APARECERÁ AQUÍ LA LETRA EN TIEMPO REAL."); return; }
+
+  if (curTrack !== S.track.id) {
+    const realChange = curTrack !== null;   // null = primera carga (sin animación)
+    curTrack = S.track.id;
+    lineIdx = -1; beatPtr = 0; barPtr = 0; secPtr = 0; lastShown = null;
+    exitEgg();
+    pos = (S.progress_ms || 0) / 1000; posAt = performance.now();
+    playing = !!S.is_playing;
+    speed = playing ? 1 : 0;
+    // Calcular punteros de ritmo según la posición actual para no perder
+    // los eventos de color si la canción ya está avanzada (barPtr empieza al final)
+    { const B = S.beats||[], BR = S.bars||[], SE = S.sections||[];
+      while(beatPtr < B.length && B[beatPtr] <= pos) beatPtr++;
+      while(barPtr  < BR.length && BR[barPtr]  <= pos) barPtr++;
+      while(secPtr  < SE.length && SE[secPtr]  <= pos) secPtr++; }
+    // Forzar sync lock del primer downbeat/línea bajo la nueva posición
+    // (asignando lineIdx a la última línea cuyo t <= pos)
+    const L0 = S.lyrics || [];
+    while (lineIdx + 1 < L0.length && L0[lineIdx + 1].t <= pos) lineIdx++;
+    if (lineIdx >= 0 && lineIdx < L0.length) {
+      showLine(L0[lineIdx].text, L0[lineIdx].back);
+    } else {
+      setLyric("...", null);
+    }
+    applyEggFont();
+    // (el nombre de la canción va abajo, en #song, NO sobreescribimos lCur)
+    $("lyrics").classList.add("song-flash");
+    clearTimeout(renderState._flashT);
+    renderState._flashT = setTimeout(() => $("lyrics").classList.remove("song-flash"), 500);
+    $("song").textContent = S.track.name;
+    $("artist").textContent = S.track.artist;
+    if (S.track.cover) { $("cover").src = S.track.cover; $("cover").style.visibility = "visible"; }
+    else $("cover").style.visibility = "hidden";
+    // Modo visual: override manual del usuario > detección del server
+    const serverMood = S.mood || "party";
+    const newMood = cfg.moodOverride !== "auto" ? cfg.moodOverride : serverMood;
+    // Fluido SIEMPRE ligado a la portada de la canción que suena:
+    // recargar paleta en cada cambio de canción (no solo si mood cambió)
+    const coverKey = S.track.cover || "";
+    if (mood !== newMood || coverKey !== _lastCoverKey) {
+      mood = newMood;
+      _lastCoverKey = coverKey;
+      coverPalette = null;                 // paleta vieja inválida
+      if (mood === "chill" && coverKey) extractCoverPalette(coverKey);
+    }
+    clearChillGradient();
+    if (isChill()) startFluid();           // sin paleta usa fallback de la portada anterior
+    $("lineNone").style.display = S.lyrics.length ? "none" : "flex";
+    $("lyrics").style.display = S.lyrics.length ? "flex" : "none";
+    hideMsg();   // MOSTRAR lyrics + OCULTAR msg AHORA
+    if (realChange) playChannel();
+    return;
+  }
+  if (S.demo) { $("badge").textContent = "DEMO"; $("badge").style.display = "block"; }
+  else if (!eggActive) $("badge").style.display = "none";
+}
+
+/* ---------- bucle principal ---------- */
+function nowPos() {
+  const n = performance.now();
+  const dt = (n - posAt) / 1000;
+  posAt = n; pos += dt * speed;
+  return pos;
+}
+
+/* ---------- RENDIMIENTO: UN solo bucle rAF + calidad adaptativa ----------
+   Antes había tres bucles requestAnimationFrame independientes (frame,
+   fluidLoop y _fxLoop): más overhead, orden de pintado impredecible y ninguna
+   medida real del coste. Ahora hay un único bucle que ejecuta, en orden,
+   letra/ritmo → fluido → partículas, y mide cuánto cuesta cada frame.
+   Objetivo: >100 fps constantes. Si el equipo no llega, la calidad baja sola
+   (lente, estelas, resolución del fluido y partículas). */
+let _perf = {
+  level: 3,                  // 3 máximo · 2 alto · 1 bajo · 0 mínimo
+  fps: 0, ms: 0,             // fps reales y coste JS medio por frame
+  frames: 0, last: 0, good: 0, bad: 0,
+};
+window.__perf = _perf;       // inspeccionable desde consola y desde los benches
+
+const QUALITY_NAMES = ["MÍNIMA", "BAJA", "ALTA", "MÁXIMA"];
+let _rafId = null;
+
+function setQuality(level) {
+  level = Math.max(0, Math.min(3, level));
+  if (level === _perf.level) return;
+  _perf.level = level;
+  applyLens();                          // la lente solo se usa desde nivel 1
+  if (fluidActive) startFluid();        // recalcula la resolución del canvas
+  showToast("⚡ CALIDAD " + QUALITY_NAMES[level]);
+}
+
+/* Ajuste automático con HISTÉRESIS (nunca oscila rápido):
+   baja si no se llega a 100 fps y sube tras 10 s por encima de 110. */
+function autoQuality() {
+  if (!cfg.autoQuality) return;
+  if (_perf.fps >= 110) {
+    _perf.bad = 0;
+    if (_perf.level < 3 && ++_perf.good >= 20) { _perf.good = 0; setQuality(_perf.level + 1); }
+  } else {
+    _perf.good = 0;
+    if (_perf.fps < 100 && _perf.level > 0 && ++_perf.bad >= 4) { _perf.bad = 0; setQuality(_perf.level - 1); }
+  }
+}
+
+/* Contador FPS + coste por frame. Decide la calidad cada 500 ms. */
+function perfSample(ms) {
+  const now = performance.now();
+  _perf.ms = _perf.ms * 0.9 + ms * 0.1;
+  if (!_perf.last) { _perf.last = now; return; }
+  _perf.frames++;
+  const elapsed = now - _perf.last;
+  if (elapsed < 500) return;
+  _perf.fps = Math.round(_perf.frames * 1000 / elapsed);
+  _perf.frames = 0;
+  _perf.last = now;
+  const el = $("fpsCounter");
+  if (el) {
+    el.style.display = "block";
+    el.textContent = _perf.fps + " fps · " + _perf.ms.toFixed(1) + " ms";
+    el.style.color = _perf.fps >= 100 ? "#00ff88" : _perf.fps >= 55 ? "#ffd700" : "#ff4444";
+  }
+  autoQuality();
+}
+
+/* Un frame de render. Separado del bucle para poder medirlo aislado. */
+function renderFrame(t) {
+  if (!S || !curTrack) return;
+  const L = S.lyrics || [];
+  // PRIMEROS 7 SEGUNDOS: título de la canción a tamaño fijo (no el del slider)
+  if (t < 7.0 && S.track) {
+    const title = "♪ " + S.track.name + " ♪";
+    if (lastShown !== title) showLine(title, S.track.artist || null, 5);
+  } else if (S.lyric && S.lyric.text !== undefined && S.lyric.text !== lastShown) {
+    // Server = autoridad. Freno anti-flip: mínimo 400 ms entre cambios.
+    const nowMs = performance.now();
+    if (!setLyric._last || nowMs - setLyric._last > 400) {
+      setLyric._last = nowMs;
+      const sl = S.lyric;
+      if (sl.text !== lastShown) {
+        lineIdx = sl.idx || 0;
+        showLine(sl.text, sl.back);
+      }
+    }
+  } else {
+    // seek hacia atrás → resetear puntero
+    if (lineIdx >= L.length || (lineIdx > 0 && L[lineIdx] && t < L[lineIdx].t - 0.5)) {
+      lineIdx = -1; lastShown = null;
+    }
+    while (lineIdx + 1 < L.length && L[lineIdx + 1].t <= t) {
+      lineIdx++;
+      const err = t - L[lineIdx].t;
+      if (Math.abs(err) < 0.8) pos -= err * 0.6;
+    }
+    // FALLBACK LOCAL: solo si el server no manda línea (sin conexión)
+    const serverHasLyric = S.lyric && S.lyric.text !== undefined;
+    if (!serverHasLyric && lineIdx >= 0 && lineIdx < L.length && L[lineIdx].text !== lastShown) {
+      const nowMs = performance.now();
+      if (!setLyric._last || nowMs - setLyric._last > 400) {
+        setLyric._last = nowMs;
+        showLine(L[lineIdx].text, L[lineIdx].back);
+      }
+    }
+  }
+  // barra de progreso a ~10 Hz y solo si el porcentaje cambia de verdad
+  if (S.track.duration_ms) {
+    if (!renderFrame._pb || Math.abs(t - renderFrame._pb) > 0.1) {
+      renderFrame._pb = t;
+      const pct = Math.min(100, t / (S.track.duration_ms / 1000) * 100).toFixed(1);
+      if (renderFrame._pct !== pct) { renderFrame._pct = pct; $("pbar").style.width = pct + "%"; }
+    }
+  }
+  // REBOTE AL BEAT (20 Hz) — solo escribe el transform si está activo
+  if (cfg.beatBounce && playing) {
+    if (!renderFrame._bb || performance.now() - renderFrame._bb > 50) {
+      renderFrame._bb = performance.now();
+      const B0 = S.beats || [];
+      let lastBeatT = 0;
+      for (let i = beatPtr - 1; i >= 0 && i < B0.length; i--) {
+        if (B0[i] <= t) { lastBeatT = B0[i]; break; }
+      }
+      const decay = Math.exp(-Math.max(0, t - lastBeatT) * 6);
+      $("lCur").style.transform = `scale(${(1 + decay * 0.02).toFixed(4)})`;
+      renderFrame._bounced = true;
+    }
+  } else if (renderFrame._bounced) {
+    renderFrame._bounced = false;
+    renderFrame._bb = 0;
+    $("lCur").style.transform = "";
+  }
+  // ESPECTRO CRT (20 Hz, solo fiesta)
+  if (cfg.spectrum && !isChill() && _specBars.length) {
+    if (!renderFrame._sp || performance.now() - renderFrame._sp > 50) {
+      renderFrame._sp = performance.now();
+      tickSpectrum(t, fluidEnergy);
+    }
+  }
+  if (playing && isChill()) {
+    // MODO CHILL: los blobs pulsan con cada beat de la canción
+    const B = S.beats || [];
+    while (beatPtr < B.length && B[beatPtr] <= t) { fluidPulse(); beatPtr++; }
+  } else if (playing) {
+    const B = S.beats || [], BR = S.bars || [], SE = S.sections || [];
+    if (cfg.timing === "beats") {
+      while (beatPtr < B.length && B[beatPtr] <= t) {
+        if (cfg.pulseWhite || cfg.pulseColor) pulse();
+        onColor();
+        beatPtr++;
+      }
+    } else {
+      while (beatPtr < B.length && B[beatPtr] <= t) { if (cfg.pulseWhite) pulse(); beatPtr++; }
+      if (cfg.timing === "sections") {
+        while (secPtr < SE.length && SE[secPtr] <= t) {
+          onColor(); dropFlash();
+          if (cfg.dropFx) explodeDrop();   // 💥 partículas en el drop
+          secPtr++;
+        }
+      } else {
+        while (barPtr < BR.length && BR[barPtr] <= t) {
+          const err = t - BR[barPtr];
+          if (Math.abs(err) < 1.0) pos -= err * 0.75;
+          onColor(); barPtr++;
+        }
+        while (secPtr < SE.length && SE[secPtr] <= t) {
+          const err2 = t - SE[secPtr];
+          if (Math.abs(err2) < 1.0) pos -= err2 * 0.75;
+          dropFlash(); secPtr++;
+        }
+      }
+    }
+  }
+}
+
+/* Bucle maestro ÚNICO: render → fluido → partículas → métricas. */
+function rafLoop() {
+  _rafId = requestAnimationFrame(rafLoop);
+  const t = nowPos();
+  const t0 = performance.now();
+  try {
+    renderFrame(t);
+    fluidStep(t);
+    fxStep();
+  } catch (e) {
+    console.error("frame error", e);   // un frame roto no debe matar el bucle
+  }
+  perfSample(performance.now() - t0);
+}
+
+/* ---------- color + ritmo ---------- */
+let colorPtr = 0;
+// Modo actual: "party" (flashes por beat) o "chill" (gradiente fluido de portada)
+let mood = "party";
+let coverPalette = null;   // [ [r,g,b], ... ] extraída de la portada
+let _lastCoverKey = "";    // URL de la última portada procesada
+
+function isChill() {
+  if (eggActive || cfg.mode === "byn") return false;
+  if (cfg.moodOverride !== "auto") return cfg.moodOverride === "chill";
+  return cfg.autoMood && mood === "chill";
+}
+
+/* Extrae los colores dominantes de la portada del álbum (mini-canvas, sin CORS) */
+let _sharedLabCanvas = null, _sharedLabCtx = null;
+function extractCoverPalette(url) {
+  if (!url) { coverPalette = null; return; }
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    try {
+      const W = 24, H = 24;
+      if (!_sharedLabCanvas) {
+        _sharedLabCanvas = document.createElement("canvas");
+        _sharedLabCanvas.width = W; _sharedLabCanvas.height = H;
+        _sharedLabCtx = _sharedLabCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      const c = _sharedLabCanvas, ctx = _sharedLabCtx;
+      ctx.drawImage(img, 0, 0, W, H);
+      const px = ctx.getImageData(0, 0, W, H).data;
+      // cuantizar a cubetas y contar frecuencia
+      const buckets = {};
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i], g = px[i+1], b = px[i+2];
+        const key = (r>>5) + "," + (g>>5) + "," + (b>>5);
+        (buckets[key] = buckets[key] || []).push([r,g,b]);
+      }
+      // top 5 cubetas por frecuencia → color promedio
+      const top = Object.values(buckets)
+        .sort((a,b) => b.length - a.length).slice(0, 5)
+        .map(arr => {
+          let r=0,g=0,b=0;
+          for (const p of arr){ r+=p[0]; g+=p[1]; b+=p[2]; }
+          const n = arr.length;
+          return [Math.round(r/n), Math.round(g/n), Math.round(b/n)];
+        });
+      if (top.length >= 2) {
+        coverPalette = top;
+        _lastCoverKey = url;
+        if (isChill()) startFluid();   // refrescar fluido con paleta real
+      }
+    } catch (e) { coverPalette = null; }   // canvas tainted → paleta null
+  };
+  img.src = url;
+}
+
+/* ====== FLUIDO INTERACTIVO: blobs que respiran al ritmo de la canción ======
+   Canvas con 5-7 blobs (metaballs suaves) usando la paleta de la portada.
+   Cada beat de la canción: los blobs pulsan (crecen) y uno cambia de color.
+   Sin beat: deriva lenta tipo lava-lamp. Personalizado por canción vía paleta. */
+let fluidActive = false, fluidCtx = null, fluidBlobs = [], fluidEnergy = 0;
+
+function startFluid() {
+  stopFluid();
+  // paleta: manual del usuario > portada
+  if (cfg.customPal && cfg.customPalCols && cfg.customPalCols.length >= 3) {
+    coverPalette = cfg.customPalCols.map(hex2rgbArr);
+    _lastCoverKey = "custom";
+  }
+  let cols = coverPalette;
+  if (!cols || cols.length < 3) return;   // sin paleta aún → el onload relanzará
+  const cv = $("fluidCanvas");
+  // resolución adaptativa: el fluido es difuso; a 50% se ve igual y rinde 4x
+  const scale = _perf.level >= 2 ? 0.5 : 0.34;
+  cv.width = Math.max(2, Math.round(innerWidth * scale));
+  cv.height = Math.max(2, Math.round(innerHeight * scale));
+  // alpha:false → el canvas es opaco (composición más barata)
+  fluidCtx = cv.getContext("2d", { alpha: false, willReadFrequently: true });
+  cols = cols.map(c => adjustTone(c));
+  fluidBlobs = [];
+  for (let i = 0; i < cols.length; i++) {
+    // alternar entre el color y su versión aclarada para profundidad luminosa
+    const c0 = cols[i];
+    const col = i % 2 === 1 ? c0.map(x => Math.min(255, Math.round(x * 0.8 + 50))) : c0;
+    fluidBlobs.push({
+      x: Math.random(), y: Math.random(),
+      r: 0.28 + Math.random()*0.22,               // radio relativo
+      dx: (Math.random()-.5)*0.05, dy: (Math.random()-.5)*0.04,
+      ph: Math.random()*Math.PI*2,                // fase de respiración
+      spd: 0.25 + Math.random()*0.35,
+      color: col.join(","),
+    });
+  }
+  fluidActive = true;
+  cv.classList.add("on");
+}
+
+function stopFluid() {
+  fluidActive = false;
+  fluidCtx = null;
+  fluidBlobs.length = 0;
+  fluidStep._t = 0;
+  $("fluidCanvas").classList.remove("on");
+}
+
+function adjustTone(c) {
+  // saturar +30% en HSL y clamp de extremos → colores vivos
+  let [h, s, l] = rgb2hsl(c);
+  s = Math.min(1, s * 1.3 + 0.08);
+  l = Math.min(0.62, Math.max(0.28, l));
+  const out = hsl2rgb(h, s, l);
+  return out;
+}
+function rgb2hsl([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  const l = (max+min)/2;
+  if (max === min) return [0, 0, l];
+  const d = max-min;
+  const s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+  let h = max === r ? ((g-b)/d + (g < b ? 6 : 0))
+        : max === g ? ((b-r)/d + 2)
+        : ((r-g)/d + 4);
+  return [h/6, s, l];
+}
+function hsl2rgb(h, s, l) {
+  const f = n => {
+    const k = (n + h*12) % 12;
+    const a = s * Math.min(l, 1-l);
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k-3, 9-k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+function fluidPulse() {          // llamado en cada beat del frame()
+  // "Pulso del color" ON → golpe de energía más fuerte (blobs crecen de golpe)
+  fluidEnergy = Math.min(cfg.pulseColor ? 2.6 : 1.2, fluidEnergy + (cfg.pulseColor ? 1.5 : 0.7));
+  // en cada beat, un blob aleatorio rota hacia OTRO color de la paleta (variedad)
+  if (fluidBlobs.length && coverPalette && coverPalette.length > 1) {
+    const b = fluidBlobs[Math.floor(Math.random() * fluidBlobs.length)];
+    const pick = coverPalette[Math.floor(Math.random() * coverPalette.length)];
+    b.color = adjustTone(pick).join(",");
+  }
+}
+
+/* Dibuja UN frame de fluido. Ya NO programa su propio rAF: lo llama rafLoop(). */
+function fluidStep(nowT) {
+  if (!fluidActive || !fluidCtx) return;
+  const cv = $("fluidCanvas");
+  const ctx = fluidCtx;
+  const W = cv.width, H = cv.height;
+  // delta REAL: a 120 Hz los blobs deben moverse igual de rápido que a 60
+  const dt = Math.min(0.05, Math.max(0.001, (nowT - (fluidStep._t || nowT)) / 1000));
+  fluidStep._t = nowT;
+
+  // energía decae suavemente → pulso tras cada beat
+  fluidEnergy *= Math.pow(0.955, dt * 60);
+  const tempo = (S && S.tempo) || 120;
+  const ms = nowT / 1000;
+  const breathe = 0.06 * Math.sin(ms * (tempo/60) * Math.PI);   // respiración al BPM
+  const boost = fluidEnergy * 0.30 + breathe;
+  const P = (coverPalette && coverPalette.length
+             ? coverPalette : [[90,60,140],[160,80,120]]).map(c => adjustTone(c));
+  const trails = cfg.trails && _perf.level >= 2;
+
+  // ESTELAS: en vez de limpiar se desvanece (motion blur nebulosa). El
+  // desvanecido es parcial y sobre el gradiente base para que nunca quede negro.
+  if (trails) {
+    ctx.globalCompositeOperation = "source-over";
+    const fade = ctx.createLinearGradient(0, 0, W, H);
+    fade.addColorStop(0, `rgba(${P[0]},0.16)`);
+    fade.addColorStop(1, `rgba(${P[P.length-1]},0.16)`);
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = "lighter";   // acumular luz sobre las estelas
+  } else {
+    ctx.globalCompositeOperation = "source-over";
+    const bg = ctx.createLinearGradient(0, 0, W, H);
+    bg.addColorStop(0, `rgb(${P[0]})`);
+    bg.addColorStop(1, `rgb(${P[P.length-1]})`);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // blobs: mezcla "screen" = siempre aclara, jamás ensucia a gris
+  ctx.globalCompositeOperation = "screen";
+  for (const b of fluidBlobs) {
+    // deriva lenta + rebote en bordes
+    b.x += b.dx*dt; b.y += b.dy*dt;
+    if (b.x < -0.1 || b.x > 1.1) b.dx *= -1;
+    if (b.y < -0.1 || b.y > 1.1) b.dy *= -1;
+    b.x = Math.max(-0.15, Math.min(1.15, b.x));
+    b.y = Math.max(-0.15, Math.min(1.15, b.y));
+    // respiración: radio oscila con el BPM + golpe en cada beat
+    const rpx = (b.r + boost*0.4 + 0.08*Math.sin(b.ph + ms*b.spd)) *
+                Math.max(W,H) * 0.8;
+    const cx = b.x*W, cy = b.y*H;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(10, rpx));
+    g.addColorStop(0, `rgba(${b.color},0.9)`);    // núcleo saturado
+    g.addColorStop(0.5, `rgba(${b.color},0.45)`);
+    g.addColorStop(1, `rgba(${b.color},0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.max(10, rpx), 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  // contraste del texto: proxy de color, sin leer el canvas (coste GPU→CPU)
+  if (!fluidStep._fc || nowT - fluidStep._fc > 250) {
+    fluidStep._fc = nowT;
+    setFluidContrast();
+  }
+}
+
+/* Volver al modo fiesta: alias conservado por compatibilidad con código que ya lo usa */
+const clearChillGradient = stopFluid;
+function newColor() {
+  if (eggActive || cfg.mode === "byn") {
+    const v = Math.floor(Math.random() * 256);
+    return `rgb(${v},${v},${v})`;
+  }
+  if (cfg.mode === "pastel") {
+    const h = Math.floor(Math.random() * 360);
+    return `hsl(${h} 85% 62%)`;
+  }
+  const pal = PALETTES[cfg.mode] || PALETTES.rgb;
+  return pal[colorPtr++ % pal.length];
+}
+
+function setContrast(css) {
+  // Luminancia relativa real (WCAG): texto negro sobre colores claros
+  const m = css && css.match(/(\d+(?:\.\d+)?)/g);
+  let lum = 0.5;
+  if (m && m.length >= 3) {
+    const lin = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    lum = 0.2126 * lin(+m[0]) + 0.7152 * lin(+m[1]) + 0.0722 * lin(+m[2]);
+  }
+  setTextColor(lum > 0.36 ? "#101018" : "#ffffff");
+}
+
+/* Cambio de color de texto con GUARDA anti-flicker: solo toca el DOM si cambia */
+let _lastTc = null;
+function setTextColor(tc) {
+  if (_lastTc === tc) return;
+  _lastTc = tc;
+  document.documentElement.style.setProperty("--tc", tc);
+}
+
+/* Contraste del fluido: medir el brillo REAL del canvas y elegir texto que
+   nunca sea invisible (ni negro sobre negro ni blanco sobre blanco). */
+function setFluidContrast() {
+  // smartContrast: medir SOLO la franja donde va la letra (por zonas)
+  if (cfg.smartContrast) return setFluidContrastZone();
+  return setFluidContrastGlobal();
+}
+/* CONTRASTE POR ZONAS: medir la franja real de la letra (35%-65% vertical).
+   Inferido del color del fondo activo, no de getImageData (evita lectura GPU→CPU). */
+function setFluidContrastZone() {
+  // usar el bg.style.backgroundColor actual como proxy (paleta known → no hace falta leer canvas)
+  const bg = $("bg").style.backgroundColor || "rgb(255,23,68)";
+  const m = bg.match(/(\d+)/g);
+  if (m && m.length >= 3) {
+    const lum = (0.2126 * +m[0] + 0.7152 * +m[1] + 0.0722 * +m[2]) / 255;
+    applyHysteresis(lum);
+  }
+}
+
+/* HISTÉRESIS anti-parpadeo compartida */
+function applyHysteresis(avgLum) {
+  const dark = "#101018", white = "#ffffff";
+  const cur = document.documentElement.style.getPropertyValue("--tc") || "";
+  if (cur === dark) {
+    setTextColor(avgLum > 0.38 ? dark : white);   // seguir oscuro hasta bajar de .38
+  } else {
+    setTextColor(avgLum > 0.52 ? dark : white);   // exigir claridad real para oscurecer
+  }
+}
+
+function onColor() {
+  if (isChill()) {   // el fluido ES el fondo: no pisarlo con color plano
+    setContrast("#ffffff");
+    return;
+  }
+  const c = newColor();
+  $("bg").style.backgroundColor = c;
+  setContrast(c.startsWith("#") ? hexToRgb(c) : c);
+}
+
+function hexToRgb(h) {
+  h = h.replace("#", "");
+  if (h.length === 3) h = h.split("").map(x => x + x).join("");
+  const n = parseInt(h, 16);
+  return "rgb(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + ")";
+}
+
+function pulse() {
+  const f = $("flash");
+  // FUERZA DEL FLASH configurable (0-100). Color según paleta activa:
+  // flash del color del beat en vez de blanco cuando "Pulso de color" está ON.
+  const s = Math.max(0, Math.min(100, +cfg.flashStrength || 0)) / 100;
+  if (s <= 0) return;                       // fuerza 0 = sin flashes
+  if (cfg.pulseColor && !cfg.pulseWhite) {
+    // flash DEL COLOR ACTUAL: el fondo se aclara y vuelve, sin blanco
+    const bg = $("bg").style.backgroundColor || "rgb(255,23,68)";
+    f.style.background = bg;
+    f.style.transition = "none";
+    f.style.opacity = String(s * 0.55);     // el color no necesita tanta opacidad
+    requestAnimationFrame(() => { f.style.transition = "opacity .4s ease-out"; f.style.opacity = "0"; });
+    setTimeout(() => { f.style.background = "#fff"; }, 450);
+  } else {
+    f.style.background = "#fff";
+    f.style.transition = "none"; f.style.opacity = String(s * 0.30);
+    requestAnimationFrame(() => { f.style.transition = "opacity .35s ease-out"; f.style.opacity = "0"; });
+  }
+}
+function dropFlash() {
+  if (+cfg.flashStrength === 0) return;
+  const f = $("flash");
+  f.style.background = "#fff";
+  f.style.transition = "none"; f.style.opacity = "0.3";
+  requestAnimationFrame(() => { f.style.transition = "opacity .5s ease-out"; f.style.opacity = "0"; });
+}
+
+/* ---------- transiciones al cambiar de canción (3 estilos) ---------- */
+function playChannel() {
+  playTransitionFor(null);
+}
+/* nextTrackId: si se pasa, el vinilo muestra YA la portada de la canción nueva */
+function playTransitionFor(nextTrackId) {
+  const mode = cfg.transition || "tv";
+  if (mode === "none") return;
+  if (mode === "tv") return playChannelTV();
+  if (mode === "shutter") return playShutter();
+  if (mode === "vinyl") return playVinyl(nextTrackId);
+  if (mode === "flashcolor") return playFlashColor();
+}
+
+/* 4) Flash de color: la pantalla se inunda con un color intenso de la paleta
+   y desvanece. Sin blanco, sin estática — puro golpe de color. */
+function playFlashColor() {
+  const s = $("transOverlay");
+  const pal = PALETTES[cfg.mode] || PALETTES.rgb;
+  const c1 = pal[Math.floor(Math.random() * pal.length)];
+  const c2 = pal[Math.floor(Math.random() * pal.length)];
+  s.innerHTML = "";
+  s.style.background = `linear-gradient(135deg, ${c1}, ${c2})`;
+  s.style.display = "block";
+  s.style.transition = "none";
+  s.style.opacity = "0.95";
+  void s.offsetWidth;
+  s.style.transition = "opacity .9s ease-in-out";
+  s.style.opacity = "0";
+  clearTimeout(playFlashColor._t);
+  playFlashColor._t = setTimeout(() => { s.style.display = "none"; s.style.background = ""; }, 950);
+}
+
+/* 1) TV antigua: barras SMPTE + estática (el clásico) */
+function playChannelTV() {
+  const ch = $("channel");
+  ch.style.background = "linear-gradient(90deg,#c0c0c0 0 12.5%,#c0c000 12.5% 25%,#00c0c0 25% 37.5%,#00c000 37.5% 50%,#c000c0 50% 62.5%,#c00000 62.5% 75%,#0000c0 75% 87.5%,#101010 87.5% 100%)";
+  ch.classList.remove("on");
+  void ch.offsetWidth;
+  ch.classList.add("on");
+  clearTimeout(playChannel._t);
+  clearTimeout(playChannel._t1);
+  playChannel._t1 = setTimeout(() => { ch.style.background = ""; }, 300);   // fase estática
+  playChannel._t = setTimeout(() => { ch.classList.remove("on"); }, 700);
+}
+
+/* 2) Obturador de proyector: dos paneles se cierran y abren */
+function playShutter() {
+  const s = $("transOverlay");
+  s.innerHTML =
+    '<div class="shut top"></div><div class="shut bot"></div>' +
+    '<div class="shut-label">CAMBIANDO DE CANCIÓN…</div>';
+  s.style.display = "block";
+  void s.offsetWidth;
+  s.classList.add("anim-shutter");
+  setTimeout(() => { s.classList.remove("anim-shutter"); s.style.display = "none"; }, 1100);
+}
+
+/* 3. Vinilo: disco negro gira y sale la nueva portada en el centro.
+   nextTrackId: portada de la canción ENTRANTE (antes de cargar su estado). */
+function playVinyl(nextTrackId) {
+  const s = $("transOverlay");
+  let cover = (S && S.track && S.track.cover) ? S.track.cover : "";
+  // si la transición llega ANTES de recargar el estado, traer la portada nueva
+  if (nextTrackId) {
+    fetch("/api/track-cover?id=" + encodeURIComponent(nextTrackId), { cache: "no-store" })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && d.cover) {
+          const img = s.querySelector(".vinyl-cover");
+          if (img) img.src = d.cover;   // swap en vivo durante el giro
+        }
+      }).catch(() => {});
+  }
+  s.innerHTML = '<div class="vinyl"><div class="vinyl-hole"></div></div>';
+  if (cover) {
+    const vImg = document.createElement("img");
+    vImg.className = "vinyl-cover";
+    vImg.src = cover;
+    s.appendChild(vImg);
+  }
+  s.style.display = "block";
+  void s.offsetWidth;
+  s.classList.add("anim-vinyl");
+  clearTimeout(playVinyl._t);
+  playVinyl._t = setTimeout(() => { s.classList.remove("anim-vinyl"); s.style.display = "none"; }, 1200);
+}
+
+/* ---------- arranque ---------- */
+applyCfg();        // primera: aplica defaults + URL overrides
+initPalPickers();
+updatePresetCount();
+onColor();
+tick();            // sync con server (4 polls/s)
+_rafId = requestAnimationFrame(rafLoop);   // UN solo bucle de render
+
+// Al ocultar la pestaña: parar TODOS los RAF para no quemar CPU/GPU en background.
+// Al volver: re-sync inmediato (el browser pausó los RAF, hay que refrescar letra).
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+  } else {
+    _tickBusy = false;   // liberar el flag por si quedó colgado
+    tick();
+    if (!_rafId) _rafId = requestAnimationFrame(rafLoop);
+  }
+});
+// Override por URL (?mood=chill) para pruebas sin tocar localStorage
+try {
+  const mq = new URLSearchParams(location.search).get("mood");
+  if (mq && ["auto","party","chill"].includes(mq)) cfg.moodOverride = mq;
+  const tq = new URLSearchParams(location.search).get("transition");
+  if (tq && ["tv","shutter","vinyl","flashcolor","none"].includes(tq)) cfg.transition = tq;
+  const tvq = new URLSearchParams(location.search).get("tv");
+  if (tvq === "0") cfg.tv = false;
+} catch (e) {}
+if (location.search.includes("chan")) playChannel();   // test visual inmediato
+
+
+/* ---------- COLA: próxima canción (abajo-izquierda) ---------- */
+let _queueTimer = null;
+function refreshQueue() {
+  fetch("/api/queue", { cache: "no-store" })
+    .then(r => r.json())
+    .then(d => {
+      const q = d.queue || [];
+      if (q.length) {
+        const nxt = q[0];
+        $("queueText").textContent = "♪ " + nxt.name + " — " + nxt.artist;
+      } else {
+        $("queueText").textContent = "";
+      }
+    })
+    .catch(() => {});
+}
+refreshQueue();
+_queueTimer = setInterval(refreshQueue, 15000);   // cada 15s
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && _queueTimer) {
+    clearInterval(_queueTimer); _queueTimer = null;
+  } else if (document.visibilityState === "visible" && !_queueTimer) {
+    refreshQueue();
+    _queueTimer = setInterval(refreshQueue, 15000);
+  }
+});
+
+/* ---------- AUTO-HIDE UI ---------- */
+let _uiTimer = null;
+function wakeUI() {
+  document.body.classList.remove("ui-hidden");
+  clearTimeout(_uiTimer);
+  _uiTimer = setTimeout(() => {
+    if (!$("panel") || $("panel").style.display === "none")
+      document.body.classList.add("ui-hidden");   // ocultar tras 5s sin mover
+  }, 5000);
+}
+["mousemove", "mousedown", "keydown", "touchstart"].forEach(ev =>
+  document.addEventListener(ev, wakeUI, { passive: true }));
+wakeUI();
+// al volver a la pestaña, resetear el timer del auto-hide
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") wakeUI();
+});
+
+
+</script>
+</body>
+</html>

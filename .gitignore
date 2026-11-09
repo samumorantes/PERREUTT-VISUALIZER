@@ -1,0 +1,17 @@
+# sensibles — NUNCA subir
+token.json
+fiesta.log
+*.pyc
+__pycache__/
+
+# tests / capturas temporales
+egg_test.html
+chan_test.html
+shot*.png
+chan*.png
+dom*.txt
+_check.js
+
+# repo anterior preservado
+.git.pre-perreutt/
+.freebuff/
