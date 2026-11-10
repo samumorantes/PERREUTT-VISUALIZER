@@ -19,6 +19,12 @@
     desde `innerWidth/2` sobre un canvas a media resolución y salían torcidas).
   - Contraste del texto sin leer píxeles del canvas, barra de progreso y rebote
     limitados a 10/20 Hz, y `applyLens` no reescribe el filtro si no cambia.
+  - La lente ya no filtra las capas animadas (fluido, ruido, refresh): pasan a
+    capas hermanas, así el `feDisplacementMap` se reaprovecha entre líneas.
+  - Fluido en canvas GPU (sin `willReadFrequently`), paleta y gradientes
+    cacheados y blobs dibujados como sprites (`drawImage`).
+  - Ojo de pez reactivado una vez si un preset antiguo lo había dejado apagado.
+  - Medido a 2560×1440 con fluido, lente, estelas y 90 partículas: 118 → 185 fps.
 - Servidor:
   - `GET /tv-frame-clean.png` (cacheado en memoria, `max-age=86400`).
   - `/api/state?mw=1` y `?force=1` (recarga sin caché) para el nuevo frontend;

@@ -42,7 +42,11 @@
   /* con lente activa NO animar transform (cada frame repinta el filtro = lag + parpadeo) */
   body.lens-live #screen{animation:none}
   /* TARGET del lente: capas visuales (fondo+letra+CRT). La UI vive fuera → clickeable */
-  #lensTarget{position:absolute;inset:0;pointer-events:none}
+  #bgLayer{position:absolute;inset:0;z-index:0;pointer-events:none}
+  #lensTarget{position:absolute;inset:0;z-index:2;pointer-events:none}
+  /* capas CRT/ruido/refresh FUERA del filtro: si animan dentro, obligan a
+     re-ejecutar el feDisplacementMap en cada frame (carísimo a pantalla completa) */
+  #fxLayer{position:absolute;inset:0;z-index:7;pointer-events:none}
   /* con lente activa NO escalar #lensTarget: el feDisplacementMap con amp adecuada
      cubre la deformación visualmente. Escalar el target multiplica el coste del
      filtro (cada píxel del filtro tiene que muestrear un área más grande). */
@@ -98,11 +102,12 @@
   @keyframes noiseShift{0%{background-position:0 0}20%{background-position:-90px 44px}40%{background-position:63px -72px}60%{background-position:-44px 82px}80%{background-position:104px 31px}100%{background-position:0 0}}
   /* LENTE GLOBAL (WebGL): canvas encima de TODO; copia la pantalla cada frame
      y la deforma por píxel con shader de barril. Compatible móvil+desktop. */
-  #refresh{position:absolute;left:0;right:0;height:13vh;z-index:8;pointer-events:none;opacity:0;
+  #refresh{position:absolute;left:0;right:0;top:0;height:13vh;z-index:8;pointer-events:none;opacity:0;
     background:linear-gradient(180deg,transparent,rgba(255,255,255,.08) 42%,rgba(255,255,255,.17) 50%,rgba(255,255,255,.08) 58%,transparent);
-    animation:roll 8s linear infinite}
+    animation:roll 8s linear infinite;will-change:transform}
   #refresh.hidden-refresh{display:none}
-  @keyframes roll{0%{top:-18vh;opacity:0}7%{opacity:1}93%{opacity:1}100%{top:118vh;opacity:0}}
+  /* transform en vez de top: la animación va al compositor (no repinta) */
+  @keyframes roll{0%{transform:translateY(-18vh);opacity:0}7%{opacity:1}93%{opacity:1}100%{transform:translateY(118vh);opacity:0}}
 
   #top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:14px;padding:3vmin 8vmin 16px 6vmin;color:var(--tc);transition:color .2s;z-index:21;background:linear-gradient(rgba(0,0,0,.28),transparent);pointer-events:none}
   #top > *{pointer-events:auto}
@@ -307,14 +312,12 @@
 <body>
 <div id="tvFrame"></div>
 <div id="screen">
- <div id="lensTarget">
+ <div id="bgLayer">
   <div id="bg"></div>
   <canvas id="fluidCanvas"></canvas>
   <div id="flash"></div>
-  <div id="crt"></div>
-  <div id="noise"></div>
-  <div id="refresh"></div>
-  <div id="pbar"></div>
+ </div>
+ <div id="lensTarget">
   <div id="top">
     <img id="cover" alt="">
     <div id="meta"><div id="song">—</div><div id="artist">—</div></div>
@@ -329,7 +332,13 @@
   <div id="source">LETRAS: LRCLIB + SPOTIFY + LYRICS.OVH · RITMO: AUDIO ANALYSIS</div>
   <div id="queueTicker"><span id="queueLabel">A CONTINUACIÓN</span><span id="queueText"></span></div>
   <div id="syncLed" class="offline" title="Estado de sincronización"><i></i><span id="syncText">OFFLINE</span></div>
-  </div><!-- /lensTarget -->
+ </div><!-- /lensTarget -->
+ <div id="fxLayer">
+  <div id="crt"></div>
+  <div id="noise"></div>
+  <div id="refresh"></div>
+  <div id="pbar"></div>
+ </div>
  <div id="fpsCounter" style="position:fixed;left:10px;top:10px;z-index:9999;font:bold 13px 'SpaceGrotesk',monospace;color:#00ff88;text-shadow:0 0 6px rgba(0,255,136,.6);pointer-events:none;display:none">-- fps</div>
 
   <!-- gear/panel moved outside #screen -->
@@ -557,6 +566,19 @@ try {
     }
   }
 } catch (e) { /* JSON corrupto → defaults */ }
+// v2.2: el ojo de pez vuelve a estar operativo. Si un preset o tema antiguo lo
+// dejó apagado en localStorage, reactivarlo UNA vez (luego manda el checkbox).
+try {
+  if (!localStorage.getItem("fv_lens_on")) {
+    localStorage.setItem("fv_lens_on", "1");
+    if (cfg.fish === false) {
+      cfg.fish = true;
+      const raw = JSON.parse(localStorage.getItem("fv_cfg") || "{}");
+      raw.fish = true;
+      localStorage.setItem("fv_cfg", JSON.stringify(raw));
+    }
+  }
+} catch (e) { /* localStorage bloqueado */ }
 // La paleta debe reaccionar al beat real, no a barras antiguas guardadas.
 if (!cfg.timing) cfg.timing = "beats";
 
@@ -1506,7 +1528,10 @@ async function tick() {
     const samePlaying = serverPlaying === playing;
     // letra activa devuelta por el server (autoridad: posición real de Spotify)
     if (sync.lyric && S && S.lyrics) { S.lyric = sync.lyric; }
-    if (S && S.track && sameTrack && samePlaying) {
+    if (!sync.track_id && (!S || !S.track)) {
+      // nada sonando: no recargar /api/state 4 veces por segundo
+      playing = false; speed = 0; pos = serverPos; posAt = performance.now();
+    } else if (S && S.track && sameTrack && samePlaying) {
       // misma canción, mismo estado → corrección agresiva del drift
       const drift = serverPos - pos;
       if (Math.abs(drift) > 30) pos = serverPos;
@@ -1773,16 +1798,18 @@ function renderFrame(t) {
         if (B0[i] <= t) { lastBeatT = B0[i]; break; }
       }
       const decay = Math.exp(-Math.max(0, t - lastBeatT) * 6);
-      $("lCur").style.transform = `scale(${(1 + decay * 0.02).toFixed(4)})`;
+      const tr = `scale(${(1 + decay * 0.02).toFixed(4)})`;
+      if (tr !== renderFrame._tr) { renderFrame._tr = tr; $("lCur").style.transform = tr; }
       renderFrame._bounced = true;
     }
   } else if (renderFrame._bounced) {
     renderFrame._bounced = false;
     renderFrame._bb = 0;
+    renderFrame._tr = "";
     $("lCur").style.transform = "";
   }
   // ESPECTRO CRT (20 Hz, solo fiesta)
-  if (cfg.spectrum && !isChill() && _specBars.length) {
+  if (cfg.spectrum && playing && !isChill() && _specBars.length) {
     if (!renderFrame._sp || performance.now() - renderFrame._sp > 50) {
       renderFrame._sp = performance.now();
       tickSpectrum(t, fluidEnergy);
@@ -1916,7 +1943,8 @@ function startFluid() {
   cv.width = Math.max(2, Math.round(innerWidth * scale));
   cv.height = Math.max(2, Math.round(innerHeight * scale));
   // alpha:false → el canvas es opaco (composición más barata)
-  fluidCtx = cv.getContext("2d", { alpha: false, willReadFrequently: true });
+  // sin willReadFrequently: el canvas se acelera por GPU (no leemos sus píxeles)
+  fluidCtx = cv.getContext("2d", { alpha: false });
   cols = cols.map(c => adjustTone(c));
   fluidBlobs = [];
   for (let i = 0; i < cols.length; i++) {
@@ -1941,6 +1969,8 @@ function stopFluid() {
   fluidCtx = null;
   fluidBlobs.length = 0;
   fluidStep._t = 0;
+  fluidStep._palSrc = null;
+  fluidStep._g = null;
   $("fluidCanvas").classList.remove("on");
 }
 
@@ -1984,6 +2014,27 @@ function fluidPulse() {          // llamado en cada beat del frame()
   }
 }
 
+/* Sprites de los blobs: el degradado radial se rasteriza UNA vez por color y
+   luego solo se escala con drawImage (mucho más barato que recrearlo por frame). */
+const _blobSprites = new Map();
+function blobSprite(color) {
+  let s = _blobSprites.get(color);
+  if (s) return s;
+  const SZ = 64;
+  s = document.createElement("canvas");
+  s.width = s.height = SZ;
+  const g = s.getContext("2d");
+  const grd = g.createRadialGradient(SZ/2, SZ/2, 0, SZ/2, SZ/2, SZ/2);
+  grd.addColorStop(0, `rgba(${color},0.9)`);
+  grd.addColorStop(0.5, `rgba(${color},0.45)`);
+  grd.addColorStop(1, `rgba(${color},0)`);
+  g.fillStyle = grd;
+  g.fillRect(0, 0, SZ, SZ);
+  if (_blobSprites.size > 24) _blobSprites.clear();
+  _blobSprites.set(color, s);
+  return s;
+}
+
 /* Dibuja UN frame de fluido. Ya NO programa su propio rAF: lo llama rafLoop(). */
 function fluidStep(nowT) {
   if (!fluidActive || !fluidCtx) return;
@@ -2000,26 +2051,38 @@ function fluidStep(nowT) {
   const ms = nowT / 1000;
   const breathe = 0.06 * Math.sin(ms * (tempo/60) * Math.PI);   // respiración al BPM
   const boost = fluidEnergy * 0.30 + breathe;
-  const P = (coverPalette && coverPalette.length
-             ? coverPalette : [[90,60,140],[160,80,120]]).map(c => adjustTone(c));
+  // paleta ajustada cacheada: adjustTone (HSL) no se recalcula en cada frame
+  let P = fluidStep._pal;
+  if (fluidStep._palSrc !== coverPalette || !P) {
+    fluidStep._palSrc = coverPalette;
+    P = (coverPalette && coverPalette.length
+         ? coverPalette : [[90,60,140],[160,80,120]]).map(c => adjustTone(c));
+    fluidStep._pal = P;
+  }
   const trails = cfg.trails && _perf.level >= 2;
+  // gradientes cacheados: crearlos en cada frame cuesta CPU sin cambiar nada
+  if (!fluidStep._g || fluidStep._gW !== W || fluidStep._gH !== H || fluidStep._gP !== P) {
+    const fade = ctx.createLinearGradient(0, 0, W, H);
+    fade.addColorStop(0, `rgba(${P[0]},0.16)`);
+    fade.addColorStop(1, `rgba(${P[P.length-1]},0.16)`);
+    const base = ctx.createLinearGradient(0, 0, W, H);
+    base.addColorStop(0, `rgb(${P[0]})`);
+    base.addColorStop(1, `rgb(${P[P.length-1]})`);
+    fluidStep._g = { fade, base };
+    fluidStep._gW = W; fluidStep._gH = H; fluidStep._gP = P;
+  }
+  const G = fluidStep._g;
 
   // ESTELAS: en vez de limpiar se desvanece (motion blur nebulosa). El
   // desvanecido es parcial y sobre el gradiente base para que nunca quede negro.
   if (trails) {
     ctx.globalCompositeOperation = "source-over";
-    const fade = ctx.createLinearGradient(0, 0, W, H);
-    fade.addColorStop(0, `rgba(${P[0]},0.16)`);
-    fade.addColorStop(1, `rgba(${P[P.length-1]},0.16)`);
-    ctx.fillStyle = fade;
+    ctx.fillStyle = G.fade;
     ctx.fillRect(0, 0, W, H);
     ctx.globalCompositeOperation = "lighter";   // acumular luz sobre las estelas
   } else {
     ctx.globalCompositeOperation = "source-over";
-    const bg = ctx.createLinearGradient(0, 0, W, H);
-    bg.addColorStop(0, `rgb(${P[0]})`);
-    bg.addColorStop(1, `rgb(${P[P.length-1]})`);
-    ctx.fillStyle = bg;
+    ctx.fillStyle = G.base;
     ctx.fillRect(0, 0, W, H);
   }
 
@@ -2036,14 +2099,10 @@ function fluidStep(nowT) {
     const rpx = (b.r + boost*0.4 + 0.08*Math.sin(b.ph + ms*b.spd)) *
                 Math.max(W,H) * 0.8;
     const cx = b.x*W, cy = b.y*H;
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(10, rpx));
-    g.addColorStop(0, `rgba(${b.color},0.9)`);    // núcleo saturado
-    g.addColorStop(0.5, `rgba(${b.color},0.45)`);
-    g.addColorStop(1, `rgba(${b.color},0)`);
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(cx, cy, Math.max(10, rpx), 0, Math.PI*2);
-    ctx.fill();
+    const rad = Math.max(10, rpx);
+    // sprite rasterizado una vez por color: drawImage en vez de recrear el
+    // radialGradient (y el arc) en cada blob y en cada frame
+    ctx.drawImage(blobSprite(b.color), cx - rad, cy - rad, rad * 2, rad * 2);
   }
   ctx.globalCompositeOperation = "source-over";
   // contraste del texto: proxy de color, sin leer el canvas (coste GPU→CPU)
