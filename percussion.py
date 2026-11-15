@@ -44,7 +44,7 @@ def classify_genres(tags):
 
 class PercussionDetector:
     """Causal, multiband spectral flux with adaptive thresholds and silence gate."""
-    def __init__(self, sample_rate, hop=512):
+    def __init__(self, sample_rate, hop=512, active_bands=(0, 1, 2)):
         import numpy as np
         self.np, self.rate, self.hop = np, sample_rate, hop
         self.size = 2048
@@ -52,6 +52,8 @@ class PercussionDetector:
         self.window = np.hanning(self.size)
         hz = np.fft.rfftfreq(self.size, 1 / sample_rate)
         self.bands = [(hz >= a) & (hz < b) for a, b in ((35, 220), (220, 2500), (2500, 10000))]
+        self.active_bands = list(active_bands)
+        self.active_mask = np.logical_or.reduce([self.bands[i] for i in self.active_bands])
         self.previous = np.zeros(self.size // 2 + 1)
         self.history = deque(maxlen=max(16, round(1.5 * sample_rate / hop)))
         self.novelty = deque(maxlen=round(8 * sample_rate / hop))
@@ -72,7 +74,12 @@ class PercussionDetector:
         self.buffer[:-n] = self.buffer[n:]
         self.buffer[-n:] = samples
         rms = float(np.sqrt(np.mean(samples * samples)))
-        spectrum = np.log1p(30 * np.abs(np.fft.rfft(self.buffer * self.window)) / self.size)
+        magnitude = np.abs(np.fft.rfft(self.buffer * self.window)) / self.size
+        # Native detection ignores midrange even for silence/drop context.
+        if self.active_bands != [0, 1, 2]:
+            rms = float(np.sqrt(2 * np.sum(magnitude[self.active_mask] ** 2) /
+                                np.mean(self.window ** 2)))
+        spectrum = np.log1p(30 * magnitude)
         delta = np.maximum(0, spectrum - self.previous)
         self.previous = spectrum
         flux = np.array([float(np.mean(delta[b])) for b in self.bands])
@@ -83,7 +90,7 @@ class PercussionDetector:
             mad = np.median(np.abs(history - median), axis=0)
             scores = np.clip((flux - median) / (0.0001 + 3 * mad + median), 0, 12)
         self.history.append(flux)
-        self.novelty.append(float(flux.sum()) if rms > 0.001 else 0.0)
+        self.novelty.append(float(flux[self.active_bands].sum()) if rms > 0.001 else 0.0)
         self.energy.append(rms)
         if rms < 0.001:
             scores[:] = 0
@@ -92,7 +99,7 @@ class PercussionDetector:
             self._tempo()
         # Pass softer candidates to the visualizer; its genre-weighted threshold
         # decides which ones flash. A higher fixed floor defeats sensitivity UI.
-        hit = bool(scores.max() >= 1.25 and at - self.last_hit >= 0.09)
+        hit = bool(scores[self.active_bands].max() >= 1.25 and at - self.last_hit >= 0.09)
         drop = False
         if hit:
             self.last_hit = at
@@ -144,7 +151,8 @@ class PercussionDetector:
 
 class LoopbackService:
     """One capture worker shared by SSE clients; releases the device when unused."""
-    def __init__(self):
+    def __init__(self, active_bands=(0, 1, 2)):
+        self.active_bands = active_bands
         self.condition = threading.Condition()
         self.thread = None
         self.clients = 0
@@ -197,7 +205,7 @@ class LoopbackService:
                     if not device or not device.get("isLoopbackDevice"):
                         raise RuntimeError("No hay salida WASAPI loopback")
                     rate, channels, hop = int(device["defaultSampleRate"]), int(device["maxInputChannels"]), 512
-                    detector = PercussionDetector(rate, hop)
+                    detector = PercussionDetector(rate, hop, self.active_bands)
                     self._publish({"state": "warming", "device": device["name"]})
                     blocks = queue.Queue(maxsize=8)
 
@@ -227,10 +235,10 @@ class LoopbackService:
                                 data = None
                             now = time.monotonic()
                             if data is None:
-                                detector = PercussionDetector(rate, hop)
+                                detector = PercussionDetector(rate, hop, self.active_bands)
                                 result = {"hit": False, "level": 0, "bpm": None, "tempo_confidence": 0, "at": now}
                             elif now - at > 0.18 or status:
-                                detector = PercussionDetector(rate, hop)
+                                detector = PercussionDetector(rate, hop, self.active_bands)
                                 continue
                             else:
                                 samples = np.frombuffer(data, dtype=np.float32).reshape(-1, channels)

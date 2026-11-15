@@ -18,12 +18,16 @@ from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot, QUrl, QBuffe
 from PySide6.QtGui import QDesktopServices, QImage, QColor, QGuiApplication
 
 import server as backend
-from percussion import classify_genres, loopback
+from percussion import classify_genres, LoopbackService
 from desktop.timing import PlaybackClock, PulseScheduler, PALETTE, PROFILES, active_line, word_groups
 
 
 from desktop.preferences import (DEFAULTS, RANGES, ENUMS, THEMES, PALETTES, DARK_DEEP, GENRE_VISUAL_PRESETS,
                                  PRESET_KEYS, clean_setting, validate, preset_keys, find_preset, is_special, egg_kind, random_palette)
+
+
+# Separate from the web server's full-band detector.
+loopback = LoopbackService(active_bands=(0, 2))
 
 
 class Controller(QObject):
@@ -69,6 +73,14 @@ class Controller(QObject):
         self.section_cursor = -1
         self.loaded_track = None
         self.loading_track = False
+        self.render_displays = set()
+        self.covered_displays = set()
+        self.painted_displays = set()
+        self.pending_state = None
+        self.transition_target = None
+        self.transition_started = 0.
+        self.pending_since = 0.
+        self.applying_transition = False
         self.signed_out = False
         self.logout_pending = False
         self._view = dict(title="FIESTA", artist="Aplicación nativa · Direct3D", cover="", playing=False,
@@ -76,7 +88,8 @@ class Controller(QObject):
                           genreOrigin="", audio="Esperando reproducción", duration=0.0, chill=False,
                           queue="", offset=0.0, bpm=0.0, demo=False, message="", loggedIn=False,
                           palette=self.cover_palette, preset="", qrImage="", qrUrl="", qualityScale=1.0,
-                          performance="", lyricSource="", special=False)
+                          performance="", lyricSource="", special=False, thresholdStatus="",
+                          transitionPhase="", transitionSerial=0, transitionKind="none", pendingCover="")
         self._lyric = dict(text="FIESTA", back="", groups=[], translated="", translationStatus="", title=True, egg="", start=0.0)
         self._position = 0.0
         self.clock = PlaybackClock()
@@ -112,6 +125,58 @@ class Controller(QObject):
                 threading.Thread(target=target, daemon=True).start()
 
     clean_setting = staticmethod(clean_setting)
+
+    def set_render_displays(self, displays):
+        self.render_displays = set(displays)
+        self.advance_transition()
+
+    def begin_track_transition(self, target):
+        self.transition_target = target
+        self.pending_state = None
+        self.covered_displays.clear()
+        self.painted_displays.clear()
+        self.loading_track = True
+        self.transition_started = time.monotonic()
+        self.clock.update(self.clock.read(), False, self.clock.track)
+        self.scheduler.reset(self.transition_started)
+        self.want_audio.clear()
+        self.clearPulse.emit()
+        self.set_view(playing=False, transitionPhase="covering", pendingCover="",
+                      transitionSerial=self._view["transitionSerial"]+1,
+                      transitionKind="none" if self._settings["reducedMotion"] else self._settings["transition"])
+
+    @Slot(str, int, str)
+    def transitionFrame(self, display, serial, phase):
+        # Acknowledge actual rendered frames, not a timer guessing GPU progress.
+        if serial != self._view["transitionSerial"] or phase != self._view["transitionPhase"]:
+            return
+        if phase == "covering":
+            self.covered_displays.add(display)
+        elif phase == "painted":
+            self.painted_displays.add(display)
+        self.advance_transition()
+
+    def advance_transition(self):
+        phase = self._view["transitionPhase"]
+        if phase == "covering" and self.pending_state and self.render_displays <= self.covered_displays:
+            packet, self.pending_state = self.pending_state, None
+            self.applying_transition = True
+            try:
+                self.receive(packet)
+                self.tick()  # Update lyrics/clock while every display is covered.
+            finally:
+                self.applying_transition = False
+            self.painted_displays.clear()
+            self.set_view(transitionPhase="painted")
+            if not self.render_displays:
+                self.advance_transition()
+        elif phase == "painted" and self.render_displays <= self.painted_displays:
+            self.set_view(transitionPhase="", pendingCover="")
+
+    def cancel_track_transition(self):
+        self.pending_state = None
+        self.loading_track = False
+        self.set_view(transitionPhase="", pendingCover="")
 
     @Property("QVariantMap", notify=viewChanged)
     def view(self):
@@ -211,7 +276,7 @@ class Controller(QObject):
             if key == "globalLock":
                 self.apply_music_preset()
         self.settingsChanged.emit()
-        self.scheduler.reset(time.monotonic())
+        self.scheduler.reset(time.monotonic(), reset_adaptation=key in ("source","genre","bassGain","trebleGain"))
         self.grid_cursor = -1
         self.clearPulse.emit()
         self.refresh_profile()
@@ -234,6 +299,19 @@ class Controller(QObject):
                       palette=list(palette), preset=self.active_preset, special=self.special_track,
                       chill=s["palette"] != "byn" and (s["mood"] == "chill" or
                       s["mood"] == "auto" and (self.special_track or s["autoMood"] and self.state.get("mood") == "chill")))
+        self.update_threshold_status()
+
+    def update_threshold_status(self):
+        base = self._settings["threshold"]
+        if self._settings["source"] != "loopback" or self.state.get("demo"):
+            message = "La adaptación actúa sobre la percusión del PC, no sobre el mapa."
+        elif not self._settings["autoThreshold"]:
+            message = f"Umbral fijo: {base:.2f}"
+        else:
+            gate = self.scheduler.adaptation.threshold(base)
+            state = "aprendiendo el fondo" if self.scheduler.adaptation.learning else "adaptado al fondo"
+            message = f"Umbral efectivo: {gate:.2f} · base {base:.2f} · {state}"
+        self.set_view(thresholdStatus=message)
 
     @Slot()
     def save(self):
@@ -406,6 +484,7 @@ class Controller(QObject):
     @Slot()
     def disconnectSpotify(self):
         self.signed_out = True
+        self.cancel_track_transition()
         self.logout_pending = True
         backend.CLIENT_ID = ""
         def clear_credentials():
@@ -654,16 +733,27 @@ class Controller(QObject):
             if packet.get("error"):
                 self.set_view(message="No se pudo borrar la credencial local; revisa los permisos de la carpeta de datos.")
         elif kind == "loading":
-            self.loading_track = True
-            self.clock.update(0, False, None)
-            self.state = {}
-            self.line_key = None
-            self.scheduler.reset(now)
-            self.clearPulse.emit()
-            self.set_view(playing=False, title="Cargando canción…", artist="Spotify", cover="")
+            self.begin_track_transition(packet.get("track"))
         elif kind in ("state", "clock"):
             data = packet["data"]
             track = (data.get("track") or {}).get("id") if kind == "state" else data.get("track_id")
+            if not self.applying_transition:
+                if kind == "clock" and self.loading_track:
+                    if self.pending_state and track == self.transition_target:
+                        self.pending_state["data"].update({k:data[k] for k in ("progress_ms","is_playing","position_at") if k in data})
+                        self.pending_state["received_at"] = packet["received_at"]
+                    return
+                if kind == "state" and (self.loading_track or
+                        (self.loaded_track and track != self.loaded_track and self.render_displays)):
+                    if not self.loading_track or track != self.transition_target:
+                        self.begin_track_transition(track)
+                    self.pending_state = copy.deepcopy(packet)
+                    self.pending_since = now
+                    # Discard prefetch acknowledgements for the previous URL.
+                    self.covered_displays.clear()
+                    self.set_view(pendingCover=(data.get("track") or {}).get("cover") or "")
+                    self.advance_transition()
+                    return
             playing = bool(data.get("is_playing"))
             position = data.get("progress_ms", 0)/1000
             if playing:
@@ -694,8 +784,6 @@ class Controller(QObject):
                     self.enqueue(("genre", track, t.get("artist_ids", [])))
                     self.line_key = None
                 if self.loaded_track != track:
-                    if self.loaded_track and track and not self._settings["reducedMotion"]:
-                        self.transitionRequested.emit(self._settings["transition"])
                     self.loaded_track = track
                     self.cover_palette = list(DEFAULTS["customPalCols"])
                     self.apply_music_preset()
@@ -710,6 +798,7 @@ class Controller(QObject):
                 self.loading_track = False
                 self.refresh_profile()
             self.set_view(playing=playing)
+            self.update_threshold_status()
         elif kind == "audio":
             data = packet["data"]
             if not self.want_audio.is_set():
@@ -718,14 +807,23 @@ class Controller(QObject):
                 bpm = data.get("bpm") if now-self.scheduler.context_at >= 8 else None
                 self.set_view(audio=(data.get("device", "Salida Windows") + (" · audio" if data.get("level", 0) > .001 else " · silencio")), bpm=bpm or 0)
                 self.scheduler.ingest(data, now, self.genre(), self._settings["threshold"],
-                                      self.calibration().get("offset", 0), self._settings["timing"])
+                                      self.calibration().get("offset", 0), self._settings["timing"],
+                                      adaptive=self._settings["autoThreshold"],
+                                      bass_gain=self._settings["bassGain"]/100,
+                                      treble_gain=self._settings["trebleGain"]/100)
+                self.update_threshold_status()
                 pulse = self.scheduler.due(now)
                 if pulse:
                     self.emit_pulse(pulse)
             else:
+                self.scheduler.reset(now)
+                self.update_threshold_status()
                 self.set_view(audio=data.get("reason", "Preparando salida WASAPI…"), bpm=0)
         elif kind == "genre" and packet["track"] == self.clock.track:
+            previous_genre = self.genre()
             self.evidence = packet["data"]
+            if previous_genre != self.genre():
+                self.scheduler.reset(now)
             self.refresh_profile()
         elif kind == "cover" and packet["track"] == self.clock.track:
             self.cover_palette = packet["colors"]
@@ -739,7 +837,11 @@ class Controller(QObject):
         elif kind == "queue":
             self.set_view(queue=packet["text"])
         elif kind == "error":
-            self.set_view(status=packet["text"])
+            if self.loading_track:
+                self.cancel_track_transition()
+                self.set_view(message=packet["text"])
+            else:
+                self.set_view(status=packet["text"])
 
     def emit_pulse(self, pulse):
         if not self._settings["reducedMotion"] and self.clock.playing and self.windows_active:
@@ -766,6 +868,16 @@ class Controller(QObject):
     @Slot()
     def tick(self):
         now = time.monotonic()
+        if self.loading_track:
+            self.want_audio.clear()
+            # A failed cover download must not trap the user behind the curtain.
+            if self.pending_state and now-self.pending_since > 2.5 and self._view["pendingCover"]:
+                self.pending_state["data"]["track"]["cover"] = ""
+                self.set_view(pendingCover="")
+            if now-self.transition_started > 30:
+                self.cancel_track_transition()
+                self.set_view(message="Spotify tarda en responder. Reintentando en segundo plano.")
+            return
         live = self._settings["source"] == "loopback" and not self.state.get("demo")
         active = self.clock.playing and self.windows_active and not self._settings["reducedMotion"]
         if live and active:

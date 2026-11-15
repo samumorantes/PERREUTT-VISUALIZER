@@ -127,7 +127,13 @@ Popup {
             SettingSlider { label: "Fuerza del flash"; settingKey: "strength" }
             Toggle { text: "Pulso de color"; checked: bridge.settings.pulseColor; onToggled: bridge.setSetting("pulseColor",checked) }
             Toggle { text: "Flash blanco"; checked: bridge.settings.pulseWhite; onToggled: bridge.setSetting("pulseWhite",checked) }
-            SettingSlider { label: "Umbral · más bajo = más sensible"; settingKey: "threshold"; minimum: 1.5; maximum: 10; increment: .25 }
+            SettingSlider { label: "Umbral base · más bajo = más sensible"; settingKey: "threshold"; minimum: 1.5; maximum: 10; increment: .25 }
+            Toggle { text: "Adaptar al ruido de la canción"; checked: bridge.settings.autoThreshold; onToggled: bridge.setSetting("autoThreshold",checked) }
+            Hint { text: bridge.view.thresholdStatus }
+            Heading { text: "ECUALIZADOR DE DETECCIÓN" }
+            SettingSlider { label: "Graves · 35–220 Hz (%)"; settingKey: "bassGain"; maximum: 200; increment: 5 }
+            SettingSlider { label: "Agudos · 2,5–10 kHz (%)"; settingKey: "trebleGain"; maximum: 200; increment: 5 }
+            Hint { text: "Medios excluidos. 100% = normal; 0% desactiva la banda. Solo afecta a la detección de percusión de Windows, no al sonido ni al mapa de beats." }
             Heading { text: "SINCRONIZACIÓN" }
             SettingChoice { label: "Fuente del ritmo"; settingKey: "source"; labels: ["Percusión de Windows", "Mapa / calibración"]; values: ["loopback","grid"] }
             Hint { text: bridge.view.audio }

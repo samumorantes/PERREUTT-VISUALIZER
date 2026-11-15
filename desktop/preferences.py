@@ -4,7 +4,8 @@ import math
 import re
 
 DEFAULTS = dict(mood="auto", source="loopback", timing="beats", strength=85.0,
-                threshold=1.75, lens=12.0, scan=70.0, mask=60.0, vignette=70.0,
+                threshold=1.75, autoThreshold=True, bassGain=100.0, trebleGain=100.0,
+                lens=12.0, scan=70.0, mask=60.0, vignette=70.0,
                 grain=30.0, fontSize=7.0, font="arcade", tv=True, reducedMotion=False,
                 fluidStyle=0, quality=1.0, fromLang="es", toLang="en",
                 theme="classic", palette="rgb", phrase=4, wordSpacing=1.0, upper=False,
@@ -14,7 +15,7 @@ DEFAULTS = dict(mood="auto", source="loopback", timing="beats", strength=85.0,
                 flicker=True, tilt=True, refresh=True, fish=True, transition="tv",
                 customPal=False, customPalCols=["#5a2a91", "#8f3f7d", "#2a6b91", "#c46a3f", "#3f915a"],
                 globalLock=False, easterEggs=True)
-RANGES = {"strength": (0,100), "threshold": (1.5,10), "lens": (0,100),
+RANGES = {"strength": (0,100), "threshold": (1.5,10), "bassGain": (0,200), "trebleGain": (0,200), "lens": (0,100),
           "scan": (0,100), "mask": (0,100), "vignette": (0,100), "grain": (0,100),
           "fontSize": (3,16), "quality": (.5,1), "fluidStyle": (0,3), "phrase": (1,4),
           "wordSpacing": (0,3), "stroke": (0,6), "shadow": (0,100)}
@@ -64,7 +65,7 @@ GENRE_VISUAL_PRESETS = {
                       vignette=40, grain=18, stroke=3, shadow=65,
                       customPalCols=["#fe1bb0","#7428ed","#00cce5","#272477","#a512bd"])),
 }
-PRESET_KEYS = set(DEFAULTS) - {"mood","autoQuality","quality","source","threshold","fromLang","toLang","globalLock","reducedMotion"}
+PRESET_KEYS = set(DEFAULTS) - {"mood","autoQuality","quality","source","threshold","autoThreshold","bassGain","trebleGain","fromLang","toLang","globalLock","reducedMotion"}
 WEB_KEYS = dict(fs="fontSize",lensStrength="lens",mode="palette",flashStrength="strength",vig="vignette",noise="grain",moodOverride="mood")
 
 def clean_setting(key, value):

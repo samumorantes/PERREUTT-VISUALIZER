@@ -7,6 +7,8 @@ Muestra la **frase que se está cantando** en pantalla grande, con fondos que la
 ## Aplicación nativa para Windows
 
 La edición nativa usa **Qt Quick y Direct3D 11**, sin navegador ni WebView.
+Instala con [FIESTA Native Setup 2.5.0](releases/FIESTA-Native-Setup-2.5.0.exe)
+(Windows 10/11 x64, por usuario, con desinstalador y accesos directos).
 Abre [FIESTA.exe](dist/FIESTA/FIESTA.exe) y conserva toda su carpeta.
 Incluye los controles del visualizador web: Spotify, karaoke, percusión WASAPI,
 temas, paletas, presets por música, transiciones, partículas, CRT, QR, easter eggs

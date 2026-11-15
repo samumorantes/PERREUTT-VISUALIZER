@@ -1,6 +1,25 @@
 # FIESTA — changelog
 
 ## En desarrollo — 2026-11-15
+- **Instalador Windows 2.5.0:** EXE de Inno Setup con identidad estable para
+  actualizar, carpeta por usuario, accesos directos y desinstalación registrada.
+  Incluye dependencias y licencias; conserva los datos personales. Generación
+  reproducible con build_installer.ps1 y checksum SHA-256 junto al instalador.
+- **Cambio de canción oculto:** conserva la escena anterior mientras cierra
+  la transición. Espera cobertura opaca y precarga de portada en todas las
+  ventanas visibles; cambia título/letra/reloj detrás y revela tras dibujar
+  la escena nueva. Sin «Cargando canción…», sin huecos en el efecto TV, con
+  barrera también sin animaciones y recuperación ante errores de red.
+- **Ecualizador de detección nativo:** flashes solo por graves (35–220 Hz)
+  y agudos (2,5–10 kHz), con sensibilidad independiente de 0 a 200% en Ritmo.
+  Los medios no disparan ni bloquean el siguiente golpe, y no entran en el tempo
+  ni el contexto de energía. Conserva el umbral adaptativo; los presets visuales
+  no alteran las bandas. No cambia el audio reproducido ni el detector de la web.
+- **Sensibilidad adaptativa nativa:** umbral base manual más ajuste gradual
+  por densidad y contraste de ataques en una ventana de seis segundos. Reduce
+  flashes por ataques débiles repetidos, conserva los fuertes y se recupera al
+  despejarse el fondo; reinicio por cambio de canción, pausa, búsqueda o silencio.
+  Interruptor y umbral efectivo visibles en Ritmo; los presets visuales no lo alteran.
 - **Estilos nativos por género:** Salsa · Candela (cálido y dinámico),
   Bachata · Seda (fluido rosa/violeta) y Reguetón · Neón (flashes intensos).
   Tarjetas con paleta y aplicación directa en Ajustes → Guardar; conservan

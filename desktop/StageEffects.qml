@@ -47,6 +47,7 @@ Item {
         anchors.fill: parent
         visible: fx.transitionKind !== "none" && fx.transitionKind !== "vinyl" && fx.progress >= 0 && fx.progress < 1 && !bridge.settings.reducedMotion
         property real progress: Math.max(0,Math.min(1,fx.progress))
+        property real coverage: Math.sin(progress*Math.PI)
         property real kind: fx.transitionKind === "tv" ? 0 : fx.transitionKind === "shutter" ? 1 : 2
         property color tint: fx.pulseColor
         fragmentShader: "shaders/transition.qsb"

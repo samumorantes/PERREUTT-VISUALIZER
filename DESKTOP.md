@@ -1,5 +1,25 @@
 # FIESTA Native para Windows
 
+## Instalador EXE
+
+Ejecuta [FIESTA-Native-Setup-2.5.0.exe](releases/FIESTA-Native-Setup-2.5.0.exe).
+Instala para tu usuario en `%LOCALAPPDATA%/Programs/FIESTA-Native`, permite
+elegir carpeta, crea accesos directos y registra la desinstalación en Windows.
+No requiere permisos de administrador. Las actualizaciones usan la misma
+identidad y carpeta; los ajustes y la sesión en `%LOCALAPPDATA%/FIESTA-Native`
+se conservan incluso al desinstalar. No incluye credenciales del desarrollador.
+El instalador no está firmado con un certificado de editor; Windows puede
+mostrar una advertencia de editor desconocido. Se incluye un SHA-256 para
+comprobar la integridad, que no sustituye la firma de un editor.
+
+Para reconstruir: instala Inno Setup 6 desde https://jrsoftware.org y ejecuta
+`powershell -ExecutionPolicy Bypass -File build_installer.ps1` después de preparar
+el entorno con `setup_desktop.ps1`. Acepta `-Compiler RUTA\ISCC.exe` y
+`-SkipBuild` para empaquetar un `dist/FIESTA` ya compilado. Los resultados van
+a `releases/`. Cierra la app del checkout antes de reconstruir su ejecutable.
+
+## Edición portable
+
 Abre `FIESTA.exe` dentro de la carpeta `dist/FIESTA`. Conserva `_internal` junto
 al ejecutable: no necesita Python instalado ni un navegador para dibujar.
 Usa Qt Quick, Direct3D 11 y shaders propios. Spotify, letras, traducción y audio
@@ -9,10 +29,27 @@ trabajan fuera del hilo de la interfaz. No incluye Electron, Chromium ni WebView
 
 - Reproduce Spotify en este PC. Ajustes → Sincronización → Percusión de la salida
   de Windows analiza el dispositivo de salida predeterminado, sin micrófono.
+- **Ritmo → Ecualizador de detección:** solo graves (35–220 Hz) y agudos
+  (2,5–10 kHz) pueden disparar los flashes de percusión. Los medios quedan fuera
+  también del cálculo de tempo y del contexto de energía del detector nativo.
+  Cada banda tiene sensibilidad de 0 a 200%: 100% normal, 0% desactivada.
+  Los ajustes se conservan al aplicar presets visuales y reinician el aprendizaje
+  del umbral. Este filtro analiza el audio; no modifica el sonido de Spotify
+  ni se aplica al modo Mapa / calibración. Separa frecuencias, no instrumentos:
+  una voz u otro sonido con armónicos graves/agudos todavía puede producir ataques.
 - El umbral inicial es 1,75 y la fuerza del flash 85%; bajar el umbral admite
   más golpes. El detector deja pasar ataques suaves desde 1,25 antes del filtro
   por género, conservando el bloqueo por silencio. Los acentos fuertes
   requieren tres puntos más. Los drops son candidatos, no marcas infalibles.
+- **Adaptar al ruido de la canción** viene activado en Ritmo. Aprende durante
+  los primeros dos segundos y observa una ventana móvil de seis segundos de
+  ataques normalizados. Si hay muchos ataques débiles entre otros más fuertes,
+  sube suavemente el umbral; vuelve a bajarlo al despejarse el fondo. No sube
+  simplemente porque el volumen sea alto ni por un patrón rápido uniforme.
+  El control manual pasa a ser el umbral base, y debajo aparece el efectivo.
+  Puedes desactivar la adaptación para volver al umbral fijo. Se reinicia al
+  cambiar de canción, pausar, buscar o perder la captura; no modifica el mapa
+  ni inventa beats. Es una heurística de transitorios, no separación de instrumentos.
 - Género automático usa etiquetas del artista como sugerencia. Puedes corregirlo
   por canción. Salsa, bachata y reguetón no equivalen a contar 3, 4 y 4 golpes:
   la salsa suele escribirse en 4/4 y su clave puede abarcar dos compases.
@@ -29,6 +66,12 @@ trabajan fuera del hilo de la interfaz. No incluye Electron, Chromium ni WebView
   Comparte el mismo reloj. La traducción de MyMemory se sincroniza por frase;
   requiere Internet y está sujeta a cuota. Cerrar una ventana deja la otra abierta.
 - Minimizar todas las ventanas detiene su animación y libera la captura de audio.
+- Al cambiar de canción, la escena anterior se conserva hasta quedar cubierta.
+  La portada se precarga y el contenido nuevo se dibuja detrás de la transición
+  en ambas ventanas antes de abrirla. No aparece «Cargando canción…». Los modos
+  sin transición o con movimiento reducido hacen el cambio cubierto sin animar.
+  Una portada que tarda más de 2,5 s se omite; un error de Spotify libera la
+  transición y se explica en Ajustes, sin sustituir la letra por mensajes de carga.
 
 ## Spotify y datos
 

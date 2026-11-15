@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--smoke-tab", type=int, choices=range(4), default=0)
     parser.add_argument("--smoke-lens", type=float)
     parser.add_argument("--smoke-style", choices=('salsa','bachata','reggaeton'))
+    parser.add_argument("--smoke-transition", choices=('tv','shutter','vinyl','flashcolor','none'))
     args = parser.parse_args()
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FIESTA-Native"
@@ -104,6 +105,8 @@ def main():
         for w in windows:
             w.setProperty('qualityReporter', w is reporter)
         active = any(w.isVisible() and w.visibility() != QQuickWindow.Visibility.Minimized for w in windows)
+        controller.set_render_displays([w.property('displayId') for w in windows
+                                       if w.isVisible() and w.visibility() != QQuickWindow.Visibility.Minimized])
         if controller.windows_active != active:
             controller.windows_active = active
             controller.scheduler.reset(time.monotonic())
@@ -132,6 +135,27 @@ def main():
     result_code = 0
     if args.smoke_test:
         started = time.monotonic()
+        transition_checks = []
+        if args.smoke_transition:
+            controller.setSetting('transition', args.smoke_transition)
+            controller.setSetting('reducedMotion', False)
+            def audit_swap():
+                if controller.view['title'] == 'NUEVA CANCIÓN' and not transition_checks:
+                    transition_checks.append(all(w.findChild(QObject, 'trackCurtain').property('coverage') == 1
+                                                 for w in windows if w.isVisible()))
+            controller.viewChanged.connect(audit_swap)
+            QTimer.singleShot(1000, lambda: controller.receive(dict(kind='loading', track='next-smoke')))
+            def next_track():
+                state = controller.smoke_state()
+                state['track'].update(id='next-smoke', name='NUEVA CANCIÓN')
+                state['progress_ms'] = 1000
+                controller.receive(dict(kind='state', data=state, received_at=time.monotonic()))
+            QTimer.singleShot(2000, next_track)
+            def capture_cover():
+                output = Path(args.smoke_output).resolve()
+                output.parent.mkdir(parents=True, exist_ok=True)
+                first.grabWindow().save(str(output.with_stem(output.stem+'-covered')))
+            QTimer.singleShot(1650, capture_cover)
         if args.smoke_showcase:
             controller.setSetting('spectrum', True)
             controller.setSetting('beatBounce', True)
@@ -163,10 +187,15 @@ def main():
                       "frames": first.property("frames"), "seconds": round(time.monotonic()-started, 2),
                       "windows": len(windows), "font": family, "saved": saved, "warnings": warnings,
                       "settings_visible": bool(panel and panel.property("visible"))}
+            if args.smoke_transition:
+                report['swap_hidden_in_all_windows'] = transition_checks == [True]
+                report['transition_finished'] = not controller.view['transitionPhase'] and controller.loaded_track == 'next-smoke'
             output.with_suffix(".json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             if sys.stdout:
                 print(json.dumps(report, ensure_ascii=False))
             result_code = 0 if saved and report["frames"] > 10 and not warnings and (not args.smoke_settings or report["settings_visible"]) else 1
+            if args.smoke_transition and not (report['swap_hidden_in_all_windows'] and report['transition_finished']):
+                result_code = 1
             app.quit()
 
         QTimer.singleShot(4000, capture)

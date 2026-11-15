@@ -1,0 +1,18 @@
+FIESTA NATIVE
+Tu música, convertida en luz.
+
+Visualizador nativo para Windows 10/11 de 64 bits.
+No necesitas instalar Python ni abrir un navegador para visualizar.
+
+• Letras sincronizadas con Spotify y segunda pantalla traducida.
+• Percusión del audio del PC, sin micrófono.
+• Flashes por graves y agudos, con sensibilidad adaptativa.
+• Estilos para salsa, bachata y reguetón, cristal CRT y transiciones.
+
+Se instala únicamente para tu usuario, sin permisos de administrador.
+Puedes elegir la carpeta y crear un acceso directo en el escritorio.
+Las actualizaciones y la desinstalación conservan tus ajustes y tu sesión.
+
+Spotify y las traducciones requieren conexión a Internet. Para conectar
+una cuenta nueva, consulta DESKTOP.md incluido en la aplicación.
+Las licencias de los componentes están en _internal\licenses.

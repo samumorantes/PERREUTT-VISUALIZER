@@ -7,12 +7,42 @@ class PercussionTests(unittest.TestCase):
     RATE = 48000
     HOP = 512
 
-    def analyze(self, signal):
-        detector = PercussionDetector(self.RATE, self.HOP)
+    def analyze(self, signal, active_bands=(0, 1, 2)):
+        detector = PercussionDetector(self.RATE, self.HOP, active_bands)
         results = []
         for start in range(0, len(signal) - self.HOP + 1, self.HOP):
             results.append(detector.process(signal[start:start+self.HOP], (start+self.HOP/2)/self.RATE))
         return results
+
+    def test_native_excludes_mid_bursts_but_keeps_bass_and_treble(self):
+        # Smooth tone bursts avoid artificial broadband clicks at sample edges.
+        for frequency, expected in ((90, True), (800, False), (1500, False), (5000, True)):
+            signal = np.zeros(self.RATE * 3)
+            t = np.arange(int(.08*self.RATE))/self.RATE
+            burst = .6*np.sin(2*np.pi*frequency*t)*np.hanning(len(t))
+            for at in (.7, 1.2, 1.7):
+                start = int(at*self.RATE)
+                signal[start:start+len(burst)] += burst
+            results = self.analyze(signal, (0, 2))
+            hits = [r['at'] for r in results if r['hit']]
+            if expected:
+                for at in (.7, 1.2, 1.7):
+                    self.assertLess(min(abs(at-h) for h in hits), .06)
+            else:
+                self.assertFalse(hits, (frequency, hits))
+
+    def test_native_mid_attack_cannot_mask_a_following_bass_hit(self):
+        signal = self.drums(3, [1.04, 1.54, 2.04])
+        t = np.arange(int(.08*self.RATE))/self.RATE
+        mid = .8*np.sin(2*np.pi*1000*t)*np.hanning(len(t))
+        for at in (1., 1.5, 2.):
+            start = int(at*self.RATE)
+            signal[start:start+len(mid)] += mid
+        hits = [r['at'] for r in self.analyze(signal, (0, 2)) if r['hit']]
+        self.assertEqual(len(hits), 3)
+        for at, hit in zip((1.04, 1.54, 2.04), hits):
+            self.assertGreaterEqual(hit, at-.01)
+            self.assertLess(hit-at, .06)
 
     def drums(self, seconds, beats):
         signal = np.zeros(int(seconds*self.RATE))

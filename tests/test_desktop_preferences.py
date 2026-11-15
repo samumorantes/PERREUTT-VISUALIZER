@@ -107,7 +107,7 @@ class NativePreferencesTests(unittest.TestCase):
 
     def test_genre_styles_preserve_detection_and_accessibility(self):
         self.track()
-        for key,value in dict(source='loopback',threshold=2.25,timing='bars',reducedMotion=True,
+        for key,value in dict(source='loopback',threshold=2.25,autoThreshold=False,bassGain=140,trebleGain=75,timing='bars',reducedMotion=True,
                               fontSize=10,fromLang='fr',qrEnabled=False).items():
             self.c.setSetting(key,value)
         self.c.setSetting('genre','salsa')
@@ -119,7 +119,7 @@ class NativePreferencesTests(unittest.TestCase):
             self.assertEqual(self.c.settings['mood'],recipe['settings']['mood'])
             self.assertEqual(self.c.base_settings['font'],recipe['settings']['font'])
             self.assertEqual([s['key'] for s in self.c.genreStyles if s['active']],[style])
-            for key,value in dict(source='loopback',threshold=2.25,timing='bars',reducedMotion=True,
+            for key,value in dict(source='loopback',threshold=2.25,autoThreshold=False,bassGain=140,trebleGain=75,timing='bars',reducedMotion=True,
                                   fontSize=10,fromLang='fr',qrEnabled=False).items():
                 self.assertEqual(self.c.settings[key],value)
             self.assertEqual(self.c.track_settings,tracks)

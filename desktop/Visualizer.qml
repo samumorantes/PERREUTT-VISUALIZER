@@ -7,6 +7,7 @@ ApplicationWindow {
     width: 1280; height: 850; minimumWidth: 640; minimumHeight: 420
     visible: true; color: "#08090b"
     property bool translationDisplay: false
+    property string displayId: translationDisplay ? "translation" : "main"
     property bool qualityReporter: false
     property real seconds: 0
     property real positionSampleTime: 0
@@ -64,6 +65,10 @@ ApplicationWindow {
     function openSettings() { settingsDrawer.open() }
     function wake() { uiAwake = true; hideUI.restart() }
     function toggleFullscreen() { visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen }
+    onFrameSwapped: {
+        if (win.rendering && trackCurtain.coverage >= 1 && trackCurtain.assetReady && bridge.view.transitionPhase)
+            bridge.transitionFrame(displayId, bridge.view.transitionSerial, bridge.view.transitionPhase)
+    }
     FrameAnimation {
         running: win.rendering
         onTriggered: {
@@ -259,6 +264,7 @@ ApplicationWindow {
         }
         Image { anchors.fill: parent; source: "../tv-frame-clean.png"; visible: bridge.settings.tv; asynchronous: true }
     }
+    TrackTransition { id: trackCurtain; objectName: "trackCurtain"; anchors.fill: parent; z: 50 }
     Row {
         anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 16; spacing: 8
         opacity: win.uiAwake || settingsDrawer.opened ? 1 : 0
