@@ -1,0 +1,13 @@
+{
+  "name": "fiesta-visualizer-effects",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:effects": "esbuild src/fiesta-shaders.js --bundle --format=iife --target=es2022 --minify --legal-comments=eof --outfile=assets/fiesta-shaders.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "shaders": "4.0.7"
+  }
+}

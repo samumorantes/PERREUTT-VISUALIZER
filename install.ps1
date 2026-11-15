@@ -14,6 +14,9 @@ Write-Host "== FIESTA installer ==" -ForegroundColor Magenta
 # 1) Copiar archivos de la app (sin token.json: cada usuario conecta su cuenta)
 New-Item -ItemType Directory -Force -Path $appDir | Out-Null
 Copy-Item "$src\server.py"          $appDir -Force
+Copy-Item "$src\percussion.py"      $appDir -Force
+Copy-Item "$src\requirements-audio.txt" $appDir -Force
+Copy-Item "$src\setup_audio.ps1"    $appDir -Force
 Copy-Item "$src\index.html"         $appDir -Force
 Copy-Item "$src\fiesta.ico"         $appDir -Force
 Copy-Item "$src\tv-frame-clean.png" $appDir -Force -ErrorAction SilentlyContinue

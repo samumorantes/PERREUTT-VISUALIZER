@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-FIESTA VISUALIZER — servidor local (solo stdlib, sin dependencias).
+FIESTA VISUALIZER — servidor local (stdlib; dependencias opcionales para audio).
 
 Qué hace:
   - OAuth Spotify (PKCE, sin client secret) para leer lo que estás escuchando.
-  - Letra EXACTA sincronizada en tiempo real desde LRCLIB (comunidad).
+  - Letra EXACTA sincronizada en tiempo real: Spicy Lyrics (TTML comunitario,
+    tiempos por sílaba) -> Spotify -> LRCLIB -> lyrics.ovh.
   - Ritmo real de la canción desde Spotify Audio Analysis (lista de beats).
   - El frontend pinta la letra en grande y cambia el fondo a un color
     RGB aleatorio en cada beat.
@@ -27,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from percussion import classify_genres, loopback
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(BASE, "config.json")
@@ -36,6 +38,7 @@ REDIRECT_URI = "http://127.0.0.1:%d/callback" % PORT
 SCOPE = "user-read-playback-state user-read-currently-playing"
 UA = "FiestaVisualizer/1.0 (proyecto local, Windows)"
 LRCLIB = "https://lrclib.net/api"
+SPICY = "https://api.spicylyrics.org/v1/lyrics/"
 
 
 def load_client_id():
@@ -47,6 +50,22 @@ def load_client_id():
 
 
 CLIENT_ID = load_client_id()
+
+
+def _load_spicy_key():
+    """Clave de la API de Spicy Lyrics (solo server-side).
+    Prioridad: variable de entorno SPICYLYRICS_KEY > spicy_key.txt (gitignored)."""
+    key = (os.environ.get("SPICYLYRICS_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        with open(os.path.join(BASE, "spicy_key.txt"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+SPICY_KEY = _load_spicy_key()
 
 _pkce = {}          # state -> (code_verifier, expira_ts) entre /login y /callback
 _track_cache = {}   # "track_id|max_words" -> {"lyrics": [...], "beats": [...], ...}
@@ -253,8 +272,10 @@ def fetch_player(token):
     if not api_allow():
         return {}
 
+    started = time.monotonic()
     st, data = request("https://api.spotify.com/v1/me/player/currently-playing", headers=h)
     if st == 204:  # nada sonando -> probar /player (pausado sin pista activa)
+        started = time.monotonic()
         st, data = request("https://api.spotify.com/v1/me/player", headers=h)
         if st == 200 and data:
             data = {"item": data.get("item"), "progress_ms": data.get("progress_ms"),
@@ -265,6 +286,7 @@ def fetch_player(token):
         token2 = access_token()
         if token2:
             h = {"Authorization": "Bearer " + token2}
+            started = time.monotonic()
             st, data = request("https://api.spotify.com/v1/me/player/currently-playing", headers=h)
             if st == 204:
                 st, data = 200, None
@@ -279,6 +301,7 @@ def fetch_player(token):
         return {"is_playing": False, "progress_ms": 0, "item": None}
     return {"is_playing": bool(data.get("is_playing")),
             "progress_ms": data.get("progress_ms") or 0,
+            "position_at": (started + time.monotonic()) / 2,
             "item": data["item"]}
 
 
@@ -288,6 +311,7 @@ def track_info(item):
         "id": item.get("id") or item.get("uri", ""),
         "name": item.get("name", "?"),
         "artist": ", ".join(a.get("name", "") for a in item.get("artists", [])),
+        "artist_ids": [a["id"] for a in item.get("artists", []) if a.get("id")],
         "album": (item.get("album") or {}).get("name", ""),
         "duration_ms": item.get("duration_ms", 0),
         "cover": imgs[0]["url"] if imgs else None,
@@ -317,58 +341,187 @@ def _extract_back_into(item):
 
 
 # ---------------------------------------------------------------- letras (LRCLIB)
+_WORD_TAG = re.compile(r"<(\d+):(\d+)(?:[.:](\d+))?>")
+
+
+def _stamp(mm, ss, frac):
+    """mm:ss[.cc] -> segundos (acepta 1, 2 o 3 dígitos de fracción)."""
+    denom = 10 ** len(frac) if frac else 1
+    return int(mm) * 60 + int(ss) + int(frac or 0) / float(denom)
+
+
+def _tokens_text(tokens):
+    """Une sílabas/palabras respetando `part` (sin espacio dentro de la palabra)."""
+    text = ""
+    for tok in tokens:
+        if not text:
+            text = tok["text"]
+        else:
+            text += ("" if tok.get("part") else " ") + tok["text"]
+    return text
+
+
+def _tokens_fix_end(tokens, line_end=None):
+    """Rellena EndTime vacíos con el inicio del token siguiente (o el fin de línea)."""
+    for i, tok in enumerate(tokens):
+        if not tok.get("end") or tok["end"] <= tok.get("t", 0):
+            nxt = tokens[i + 1]["t"] if i + 1 < len(tokens) else (line_end or tok["t"] + 0.35)
+            tok["end"] = round(max(tok["t"] + 0.05, nxt), 3)
+
+
+def _split_parentheses(txt):
+    """Devuelve (texto principal, coros entre paréntesis)."""
+    main_parts, back_parts = [], []
+    for part in re.split(r"(\([^)]*\))", txt or ""):
+        p = part.strip()
+        if not p:
+            continue
+        if p.startswith("(") and p.endswith(")"):
+            back_parts.append(p[1:-1])
+        else:
+            main_parts.append(p)
+    return " ".join(main_parts), " ".join(back_parts)
+
+
 def parse_lrc(text):
-    """Convierte LRC ('[mm:ss.xx] línea') en [{t, text, back?}].
-    Los paréntesis (así) NO son línea separada — se devuelven en `back`
-    dentro del mismo item, para que aparezcan como subtítulo debajo."""
+    """Convierte LRC ('[mm:ss.xx] línea') en [{t, text, back?, end?, words?}].
+
+    Soporta LRC mejorado (etiquetas <mm:ss.xx> por palabra): esas canciones
+    conservan el tiempo REAL de cada palabra en `words` y se pintan en karaoke.
+    Los paréntesis (así) NO son línea separada — se devuelven en `back`."""
     out = []
     if not text:
         return out
-    for m in re.finditer(r"\[(\d+):(\d+)(?:[.:](\d+))?\]([^\[]*)", text):
-        mm, ss = int(m.group(1)), int(m.group(2))
-        frac = int(m.group(3) or 0)
-        txt = m.group(4).strip()
-        if not txt:
+    for m in re.finditer(r"\[(\d+):(\d+)(?:[.:](\d+))?\]([^\[\r\n]*)", text):
+        line_t = _stamp(m.group(1), m.group(2), m.group(3))
+        raw = m.group(4).strip()
+        if not raw:
             continue
-        denom = 10 ** len(m.group(3)) if m.group(3) else 1
-        t = mm * 60 + ss + frac / float(denom)
-        # Extraer partes: principal vs (back)
-        main_parts, back_parts = [], []
-        for part in re.split(r"(\([^)]*\))", txt):
-            p = part.strip()
-            if not p:
-                continue
-            if p.startswith("(") and p.endswith(")"):
-                back_parts.append(p[1:-1])
-            else:
-                main_parts.append(p)
-        main_text = " ".join(main_parts)
-        if main_text:
-            item = {"t": round(t, 3), "text": main_text}
-            if back_parts:
-                item["back"] = " ".join(back_parts)
-            out.append(item)
+        words = []
+        tags = list(_WORD_TAG.finditer(raw))
+        if tags:
+            prev_space = True
+            for i, wm in enumerate(tags):
+                wt = _stamp(wm.group(1), wm.group(2), wm.group(3))
+                end = tags[i + 1].start() if i + 1 < len(tags) else len(raw)
+                seg = raw[wm.end():end]
+                if not seg.strip():
+                    continue
+                words.append({
+                    "text": seg.strip(),
+                    "t": round(wt, 3),
+                    "end": 0.0,
+                    # sin espacio antes del tag = sílaba de la misma palabra
+                    "part": bool(words) and not prev_space and not seg[:1].isspace(),
+                })
+                prev_space = seg[-1:].isspace()
+            pre = raw[:tags[0].start()].strip()
+            if pre and words:
+                words[0]["text"] = pre + " " + words[0]["text"]
+            raw = _tokens_text(words) if words else _WORD_TAG.sub("", raw)
+        main_text, back = _split_parentheses(raw)
+        if not main_text:
+            continue
+        item = {"t": round(line_t, 3), "text": main_text}
+        if back:
+            item["back"] = back
+        if words and not back:
+            _tokens_fix_end(words)
+            item["text"] = _tokens_text(words)
+            item["words"] = words
+            item["end"] = round(max(w["end"] for w in words), 3)
+            item["kind"] = "word"
+        out.append(item)
+    # En LRC mejorado el último token no trae EndTime: sin esto se rellenaba en
+    # 0.35 s y se quedaba "muerto" durante el resto de la frase. Usar el inicio
+    # de la línea siguiente (con tope) mantiene el karaoke vivo hasta el cambio.
+    for i, item in enumerate(out):
+        words = item.get("words")
+        if not words:
+            continue
+        nxt = out[i + 1]["t"] if i + 1 < len(out) else None
+        last_t = words[-1]["t"]
+        if nxt is not None and nxt > last_t:
+            words[-1]["end"] = round(min(nxt, last_t + 2.5), 3)
+            item["end"] = round(max(w["end"] for w in words), 3)
     return out
 
 
+def _word_groups(tokens):
+    """Agrupa sílabas en palabras: `part` significa que continúa la anterior."""
+    groups, cur = [], []
+    for tok in tokens:
+        if tok.get("part") and cur:
+            cur.append(tok)
+        else:
+            if cur:
+                groups.append(cur)
+            cur = [tok]
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+def _join_groups(groups):
+    toks = [t for g in groups for t in g]
+    if toks:                      # la primera sílaba de la frase no arrastra `part`
+        toks[0] = dict(toks[0], part=False)
+    return toks
+
+
 def split_phrases(lines, duration, max_words=4):
-    """Convierte líneas largas en FRASES CORTAS (máx. max_words palabras),
-    repartiendo el tiempo de la línea original entre las frases."""
+    """Convierte líneas largas en FRASES CORTAS (máx. max_words palabras).
+
+    Si la fuente trae tiempos por palabra/sílaba (Spicy Lyrics o LRC mejorado),
+    cada frase empieza en el instante REAL de su primera palabra y la última
+    hereda el fin de línea: nada de repartos uniformes que desincronizan."""
     MAX_W = max(1, min(int(max_words), 8))
     out = []
     for i, ln in enumerate(lines):
         start = ln["t"]
-        end = lines[i + 1]["t"] if i + 1 < len(lines) else min(start + 6.0, (duration or start + 6.0))
+        end = ln.get("end") or (lines[i + 1]["t"] if i + 1 < len(lines)
+                                else min(start + 6.0, (duration or start + 6.0)))
         span = max(end - start, 1.2)
-        words = ln["text"].split()
         back = ln.get("back")
+        toks = ln.get("words") or []
+        if toks:
+            groups = _word_groups(toks)
+            if len(groups) <= MAX_W:
+                item = {"t": round(start, 3), "text": ln["text"], "words": toks}
+                if ln.get("end"):
+                    item["end"] = round(float(ln["end"]), 3)
+                if back:
+                    item["back"] = back
+                out.append(item)
+                continue
+            # cortar en puntuación y, como mucho, cada MAX_W palabras
+            chunks, cur = [], []
+            for g in groups:
+                if cur and (len(cur) >= MAX_W or
+                            re.search(r"[,;:.!?…—–]$", _tokens_text([t for x in cur for t in x]))):
+                    chunks.append(cur)
+                    cur = []
+                cur.append(g)
+            if cur:
+                chunks.append(cur)
+            for j, chunk in enumerate(chunks):
+                ctoks = _join_groups(chunk)
+                ct = start if j == 0 else ctoks[0]["t"]
+                item = {"t": round(float(ct), 3), "text": _tokens_text(ctoks),
+                        "words": ctoks,
+                        "end": round(max(t["end"] for t in ctoks), 3)}
+                if j == 0 and back:
+                    item["back"] = back
+                out.append(item)
+            continue
+        words = ln["text"].split()
         if len(words) <= MAX_W:
             item = {"t": round(start, 3), "text": ln["text"]}
             if back:
                 item["back"] = back
             out.append(item)
             continue
-        # cortar primero por signos (comas, puntos, guiones)
+        # sin tiempos por palabra: cortar por signos y repartir el tiempo
         parts = [p.strip() for p in re.split(r"[,;:—–]\s*|\s*\.\s*|\s+-\s+", ln["text"]) if p.strip()]
         chunks = []
         for p in parts:
@@ -383,6 +536,138 @@ def split_phrases(lines, duration, max_words=4):
                 item["back"] = back
             out.append(item)
     return out
+
+
+# ---------------------------------------------------------------- letras (Spicy Lyrics)
+def _spicy_tokens(syls):
+    """Syllables de la API -> tokens con tiempo real y bandera `part`.
+    `IsPartOfWord` en una sílaba significa que la SIGUIENTE no lleva espacio."""
+    out = []
+    prev_join = False
+    for s in (syls or []):
+        if not isinstance(s, dict):
+            continue
+        txt = s.get("Text") or ""
+        if not txt:
+            continue
+        try:
+            t = float(s.get("StartTime") or 0)
+        except (TypeError, ValueError):
+            t = 0.0
+        try:
+            end = float(s.get("EndTime") or 0)
+        except (TypeError, ValueError):
+            end = 0.0
+        out.append({"text": txt, "t": round(t, 3), "end": round(end, 3),
+                    "part": bool(prev_join and out)})
+        prev_join = bool(s.get("IsPartOfWord"))
+    return out
+
+
+def _parse_spicy(body):
+    """Convierte la respuesta de /v1/lyrics (Type Syllable|Line|Static) en líneas.
+    Syllable conserva el tiempo de cada sílaba y los coros (Background) aparte."""
+    if not isinstance(body, dict):
+        return []
+    typ = str(body.get("Type") or "").strip().lower()
+    content = body.get("Content")
+    if content is None:
+        content = body.get("Lines") or []
+    out = []
+    if typ == "syllable":
+        for item in content or []:
+            if not isinstance(item, dict):
+                continue
+            lead = item.get("Lead") or {}
+            toks = _spicy_tokens(lead.get("Syllables"))
+            if not toks:
+                continue
+            _tokens_fix_end(toks, lead.get("EndTime"))
+            text = _tokens_text(toks).strip()
+            if not text:
+                continue
+            try:
+                st = float(lead.get("StartTime"))
+            except (TypeError, ValueError):
+                st = toks[0]["t"]
+            try:
+                en = float(lead.get("EndTime"))
+            except (TypeError, ValueError):
+                en = toks[-1]["end"]
+            line = {"t": round(st, 3), "end": round(en, 3), "text": text,
+                    "words": toks, "kind": "syllable", "src": "spicy"}
+            backs = []
+            for bg in (item.get("Background") or []):
+                if not isinstance(bg, dict):
+                    continue
+                bt = _spicy_tokens(bg.get("Syllables"))
+                if bt:
+                    _tokens_fix_end(bt, bg.get("EndTime"))
+                    backs.extend(bt)
+            if backs:
+                line["back"] = _tokens_text(backs).strip()
+                line["back_words"] = backs
+            out.append(line)
+    elif typ == "line":
+        for item in content or []:
+            if not isinstance(item, dict):
+                continue
+            txt = (item.get("Text") or "").strip()
+            if not txt:
+                continue
+            try:
+                t = float(item.get("StartTime") or 0)
+            except (TypeError, ValueError):
+                t = 0.0
+            try:
+                en = float(item.get("EndTime") or 0)
+            except (TypeError, ValueError):
+                en = 0.0
+            it = {"t": round(t, 3), "text": txt, "kind": "line", "src": "spicy"}
+            if en > t:
+                it["end"] = round(en, 3)
+            main_text, back = _split_parentheses(txt)
+            if main_text:
+                it["text"] = main_text
+            if back:
+                it["back"] = back
+            out.append(it)
+    else:  # Static: sin tiempos; se reparten por la duración
+        for item in content or []:
+            txt = item.get("Text") if isinstance(item, dict) else str(item)
+            txt = (txt or "").strip()
+            if txt:
+                out.append({"text": txt, "kind": "static", "src": "spicy"})
+    return out
+
+
+def fetch_lyrics_spicy(track, key):
+    """API oficial de Spicy Lyrics: mismo catálogo TTML que la extensión.
+    Jerarquía del servidor: sync comunitario -> Apple Music -> Spotify."""
+    tid = track.get("id") or ""
+    if not key or not tid:
+        return []
+    try:
+        st, data = request(SPICY + urllib.parse.quote(tid),
+                           headers={"Authorization": "Bearer " + key,
+                                    "Accept": "application/json"}, timeout=10)
+        if st != 200 or not isinstance(data, dict):
+            if st not in (200, 404):
+                log("[lyrics] spicy HTTP %s" % st)
+            return []
+        body = data.get("Body") if isinstance(data.get("Body"), dict) else data
+        lines = _parse_spicy(body)
+        if lines and all("t" not in l for l in lines):
+            dur = (track.get("duration_ms") or 0) / 1000.0 or 180.0
+            step = min(dur / len(lines), 9.0)
+            lines = [dict(l, t=round(1.0 + i * step, 3)) for i, l in enumerate(lines)]
+        src = str(body.get("source") or "spicy")
+        for l in lines:
+            l["src"] = src
+        return lines
+    except Exception as e:
+        log("[lyrics] spicy:", e)
+        return []
 
 
 def fetch_lyrics_spotify(track, token):
@@ -505,6 +790,12 @@ def fetch_lyrics(track, token=None):
     tid = track.get("id") or ""
     if tid and tid in _lyrics_permanent:
         return _lyrics_permanent[tid]
+    # 0) Spicy Lyrics: mismo catálogo comunitario que usa la extensión y, si
+    #    existe, tiempos por sílaba/palabra (la máxima fidelidad disponible).
+    if SPICY_KEY:
+        spicy_found = fetch_lyrics_spicy(track, SPICY_KEY)
+        if spicy_found:
+            return _remember_lyrics(tid, spicy_found)
     dur = round(track["duration_ms"] / 1000) if track.get("duration_ms") else None
 
     # 1) Spotify interno primero — usa paréntesis reales para los backs
@@ -644,7 +935,7 @@ def detect_mood(track, tempo, lyrics=None):
 
 def fetch_rhythm(track, token):
     """Ritmo real desde Spotify Audio Analysis:
-    beats (pulsos), bars (downbeats/compases) y sections (cambios estructurales = drops)."""
+    beats (pulsos), bars (compases) y sections (cambios estructurales, no necesariamente drops)."""
     try:
         st, data = request(
             "https://api.spotify.com/v1/audio-analysis/%s" % urllib.parse.quote(track["id"]),
@@ -655,12 +946,12 @@ def fetch_rhythm(track, token):
             beats, bars, sections = times("beats"), times("bars"), times("sections")
             tempo = float((data.get("track") or data.get("tracks") or {}).get("tempo") or 120.0)
             if beats:
-                return {"beats": beats, "bars": bars, "sections": sections, "tempo": tempo}
+                return {"beats": beats, "bars": bars, "sections": sections, "tempo": tempo, "source": "spotify"}
     except Exception:
         pass
     tempo = 120.0
     beats = synth_beats(tempo, track["duration_ms"] / 1000)
-    return {"beats": beats, "bars": beats[::4], "sections": beats[::32], "tempo": tempo}
+    return {"beats": beats, "bars": beats[::4], "sections": [], "tempo": tempo, "source": "estimated"}
 
 
 def enrich(track, token, max_words=4, force=False):
@@ -672,14 +963,16 @@ def enrich(track, token, max_words=4, force=False):
     if cached and time.time() - cached["at"] < 6 * 3600:
         return cached
     lyrics, beats, bars, sections, tempo = [], [], [], [], 120.0
+    rhythm_source = "estimated"
     if track.get("type") == "track" and tid and not tid.startswith("spotify:local"):
         dur = track.get("duration_ms", 0) / 1000.0 or 240.0
         lyrics = split_phrases(fetch_lyrics(track, token), dur, max_words)
         rhythm = fetch_rhythm(track, token)
+        rhythm_source = rhythm["source"]
         beats, bars, sections, tempo = (rhythm["beats"], rhythm["bars"],
                                         rhythm["sections"], rhythm["tempo"])
     res = {"lyrics": lyrics, "beats": beats, "bars": bars, "sections": sections,
-           "tempo": tempo, "at": time.time()}
+           "tempo": tempo, "rhythm_source": rhythm_source, "at": time.time()}
     _bounded_cache_set(_track_cache, tid, res)
     return res
 
@@ -689,6 +982,7 @@ _player_cache = {"data": None, "at": 0.0, "mw": 4}
 _ratelimited_until = 0.0   # timestamp hasta el que Spotify nos castigó (429 QUOTA_EXCEEDED)
 _queue_cache = {"items": None, "at": 0.0}      # cola: 1 llamada/min máx
 _cover_cache = {}          # track_id -> URL de portada (permanente)
+_genre_cache = {}          # artist_id -> (fetched_at, tags); optional evidence only
 _demo_start = time.time()
 # cache del sync: guarda progress_ms + ts + track_id para poder servir todos los polls
 # sin martillar Spotify. track_id se rellena siempre para que el cliente no recargue state.
@@ -719,6 +1013,11 @@ def _current_lyric(lyrics, pos_sec):
         "text": cur["text"],
         "back": cur.get("back"),
         "t": cur["t"],
+        "end": cur.get("end"),
+        "words": cur.get("words"),
+        "back_words": cur.get("back_words"),
+        "kind": cur.get("kind"),
+        "src": cur.get("src"),
         "next_t": nxt["t"] if nxt else None,
         "idx": idx,
     }
@@ -742,14 +1041,14 @@ def _refresh_sync(tok, now):
     player = fetch_player(tok)
     if not player:
         return                              # presupuesto agotado: seguimos extrapolando
-    _sync_cache["fetched_at"] = now
+    _sync_cache["fetched_at"] = time.time()
     if player.get("error"):
         if player["error"] == "ratelimit":
             _ratelimited_until = now + 1200  # 20 min sin tocar la API
         return
     _sync_cache["is_playing"] = bool(player.get("is_playing"))
     _sync_cache["prog"] = player.get("progress_ms") or 0
-    _sync_cache["pos_at"] = now
+    _sync_cache["pos_at"] = player.get("position_at", time.monotonic())
     tid = (player.get("item") or {}).get("id", "")
     if tid == _sync_cache["track_id"]:
         return
@@ -773,9 +1072,10 @@ def sync_state():
                 _refresh_sync(tok, now)
         finally:
             _sync_lock.release()
+    now = time.time()  # refresh may have waited on Spotify and lyric providers
     prog = _sync_cache["prog"]
     if _sync_cache["is_playing"]:
-        prog += int(max(0.0, now - _sync_cache["pos_at"]) * 1000)
+        prog += int(max(0.0, time.monotonic() - _sync_cache["pos_at"]) * 1000)
     out = {"progress_ms": prog, "is_playing": _sync_cache["is_playing"],
            "track_id": _sync_cache["track_id"], "ts": now,
            "health": "synced" if _sync_cache["track_id"] else "waiting"}
@@ -865,11 +1165,13 @@ def build_state(max_words=4, force=False):
     track = track_info(player["item"])
     out["is_playing"] = player["is_playing"]
     out["progress_ms"] = player["progress_ms"]
+    out["position_at"] = player.get("position_at", time.monotonic())
     out["track"] = track
     enr = enrich(track, token, max_words, force)
     out["lyrics"] = enr["lyrics"]
     out["beats"], out["bars"], out["sections"] = enr["beats"], enr["bars"], enr["sections"]
     out["tempo"] = enr["tempo"]
+    out["rhythm_source"] = enr["rhythm_source"]
     # mood con letra SIN dividir (energía real), no las frases recortadas del enrich
     raw_lyrics = fetch_lyrics(track, token)
     out["mood"] = detect_mood(track, enr["tempo"], raw_lyrics)
@@ -893,6 +1195,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
+        # Defensa básica: este servidor local puede exponerse por un túnel.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -1040,10 +1346,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _healthz(self, u):
         """Latido barato: no llama a Spotify (lo usa el lanzador para esperar al server)."""
-        self._json({"ok": True, "logged_in": bool(load_tokens())})
+        self._json({"ok": True, "logged_in": bool(load_tokens()),
+                    "spicy": bool(SPICY_KEY)})
 
     # ---------- API ----------
     def _api_state(self, u):
+        started = time.monotonic()
         try:
             mw = int(self._query(u).get("mw", ["4"])[0])
         except (TypeError, ValueError):
@@ -1051,13 +1359,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         mw = max(1, min(mw, 8))
         force = "force" in self._query(u)
         try:
-            self._json(build_state(mw, force=force))
+            out = dict(build_state(mw, force=force))
+            position_at = out.pop("position_at", time.monotonic())
+            if out.get("is_playing"):
+                out["progress_ms"] += int(max(0.0, time.monotonic() - position_at) * 1000)
+            out["server_processing_ms"] = (time.monotonic() - started) * 1000
+            self._json(out)
         except Exception as e:
             self._json({"error": str(e)}, code=500)
 
     def _api_sync(self, u):
+        started = time.monotonic()
         try:
-            self._json(sync_state())
+            out = sync_state()
+            out["server_processing_ms"] = (time.monotonic() - started) * 1000
+            self._json(out)
         except Exception as e:
             self._json({"error": str(e)}, code=500)
 
@@ -1109,7 +1425,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._json({"queue": [], "error": str(e)})
 
+    def _api_genre(self, u):
+        """Cache artist evidence separately: genre lookups must not delay sync."""
+        ids = self._query(u).get("artists", [""])[0].split(",")[:3]
+        tags = []
+        token = None
+        for artist_id in ids:
+            if not re.fullmatch(r"[A-Za-z0-9]{22}", artist_id):
+                continue
+            cached = _genre_cache.get(artist_id)
+            if not cached or time.time() - cached[0] > 3600:
+                artist_tags = []
+                if time.time() >= _ratelimited_until and api_allow():
+                    token = token or access_token()
+                    if token:
+                        status, data = request("https://api.spotify.com/v1/artists/" + artist_id,
+                                               headers={"Authorization": "Bearer " + token}, timeout=3)
+                        if status == 200 and isinstance(data, dict):
+                            artist_tags = [x for x in data.get("genres", []) if isinstance(x, str)]
+                cached = (time.time(), artist_tags)
+                _bounded_cache_set(_genre_cache, artist_id, cached)
+            tags.extend(cached[1])
+        self._json({**classify_genres(tags), "tags": sorted(set(tags))})
+
+    def _api_percussion(self, u):
+        """SSE carries derived events only; never audio samples."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.connection.settimeout(3)
+        sequence = loopback.subscribe()
+        try:
+            while True:
+                next_sequence, packet = loopback.wait(sequence)
+                if next_sequence == sequence:
+                    self.wfile.write(b": heartbeat\n\n")
+                else:
+                    self.wfile.write(("data: " + json.dumps(packet) + "\n\n").encode("utf-8"))
+                self.wfile.flush()
+                sequence = next_sequence
+                if packet.get("state") == "unavailable" and (loopback.thread is None or not loopback.thread.is_alive()):
+                    break
+        except (OSError, ConnectionError):
+            pass
+        finally:
+            loopback.unsubscribe()
+
     # ---------- router ----------
+    def _shader_bundle(self, u):
+        """Serve only the public, prebuilt effects bundle; never arbitrary paths."""
+        try:
+            with open(os.path.join(BASE, "assets", "fiesta-shaders.js"), "rb") as f:
+                self._send(200, f.read(), "text/javascript; charset=utf-8")
+        except OSError:
+            self._send(404, "effects bundle missing", "text/plain")
+
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         route = _ROUTES.get(u.path)
@@ -1122,6 +1494,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 _ROUTES = {
+    "/api/percussion": Handler._api_percussion,
+    "/api/genre": Handler._api_genre,
+    "/assets/fiesta-shaders.js": Handler._shader_bundle,
     "/": Handler._page,
     "/index.html": Handler._page,
     "/healthz": Handler._healthz,

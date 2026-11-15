@@ -29,6 +29,9 @@ def start_server():
     exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(exe):
         exe = sys.executable
+    audio_exe = os.path.join(HERE, ".venv-audio", "Scripts", "pythonw.exe")
+    if os.path.exists(audio_exe):
+        exe = audio_exe
     _log_file = open(LOG, "ab", buffering=0)
     try:
         subprocess.Popen(

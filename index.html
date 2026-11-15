@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/x-icon" href="/fiesta.ico">
 <title>FIESTA — Visualizer</title>
+<script defer src="/assets/fiesta-shaders.js"></script>
 <style>
   @font-face{font-family:'SpaceGrotesk';src:url('/fonts/spacegrotesk.woff2') format('woff2');font-display:swap}
   @font-face{font-family:'ArcadeClassic';src:url('/fonts/arcadeclassic_full.woff') format('woff');font-display:swap}
@@ -26,26 +27,37 @@
      la imagen siempre mide 100svh de alto, centrada. El hueco medido sobre el
      PNG (127,94)-(1364,887) px → posición de #screen en función de 100svh. */
   :root{ --tvratio: 1.51882;   /* w/h del PNG */
-         --hx0: .08506; --hy0: .09563; --hx1: .08573; --hy1: .09664; } /* hueco frac */
+         --hx0: .08506; --hy0: .09563; --hx1: .08573; --hy1: .09664; /* hueco frac */
+         --tvw: calc(100svh * var(--tvratio) * (1 - var(--hx0) - var(--hx1)));
+         --tvh: calc(100svh * (1 - var(--hy0) - var(--hy1)));
+         --tv-safe: 5vmin; }
   #tvFrame{position:absolute;inset:0;z-index:20;pointer-events:none;
     background:url("tv-frame-clean.png") no-repeat center / auto 100%}
-  /* pantalla EXACTAMENTE en el hueco (válido para cualquier viewport 16:9 o más ancho).
-     border-radius generoso para seguir la curva de las esquinas del tubo. */
+  /* El fondo llega bajo el bisel. Solo el PNG recorta la silueta del cristal;
+     los 2px de solape evitan juntas por redondeo al escalar el marco. */
   #screen{
-    left: calc(50vw - (100svh * var(--tvratio) / 2) + (100svh * var(--tvratio)) * var(--hx0));
-    top: calc(100svh * var(--hy0));
-    width: calc(100svh * var(--tvratio) * (1 - var(--hx0) - var(--hx1)));
-    height: calc(100svh * (1 - var(--hy0) - var(--hy1)));
+    left: calc(50vw - (100svh * var(--tvratio) / 2) + (100svh * var(--tvratio)) * var(--hx0) - 2px);
+    top: calc(100svh * var(--hy0) - 2px);
+    width: calc(var(--tvw) + 4px);
+    height: calc(var(--tvh) + 4px);
     position:absolute; z-index:0; overflow:hidden;
     transform:none;
-    border-radius:3vmin}
+    animation:screenDrift 12s ease-in-out infinite;
+    border-radius:0}
+  /* El cristal no se desplaza respecto al mueble, incluso sin lente. */
+  body:not(.no-tv):not(.compact) #screen{animation:none;transform:none}
   /* con lente activa NO animar transform (cada frame repinta el filtro = lag + parpadeo) */
   body.lens-live #screen{animation:none}
-  /* TARGET del lente: capas visuales (fondo+letra+CRT). La UI vive fuera → clickeable */
+  /* Una sola lente para fondo, letra, CRT e interfaz del cristal. */
   #bgLayer{position:absolute;inset:0;z-index:0;pointer-events:none}
-  #lensTarget{position:absolute;inset:0;z-index:2;pointer-events:none}
-  /* capas CRT/ruido/refresh FUERA del filtro: si animan dentro, obligan a
-     re-ejecutar el feDisplacementMap en cada frame (carísimo a pantalla completa) */
+  #lensTarget{position:absolute;inset:0;z-index:2}
+  /* El margen protege los textos, sin reducir el área iluminada. */
+  #uiLayer{position:absolute;inset:0;z-index:8;pointer-events:none}
+  /* La UI va pegada al cristal: la lente la curva igual que la letra y el fondo.
+     El margen crece solo un poco con la intensidad para que el texto no se
+     meta bajo el bisel en lentes muy fuertes (antes se empujaba al centro y
+     se veía plana). */
+  body:not(.no-tv):not(.compact) #uiLayer{inset:max(2.5vmin, calc(2.5vmin + var(--lens-safe, 0px) * .22))}
   #fxLayer{position:absolute;inset:0;z-index:7;pointer-events:none}
   /* con lente activa NO escalar #lensTarget: el feDisplacementMap con amp adecuada
      cubre la deformación visualmente. Escalar el target multiplica el coste del
@@ -58,13 +70,19 @@
     66%{transform:perspective(1100px) rotateX(1.04deg) rotateY(.45deg) translate(-.4px,.4px)}
     100%{transform:perspective(1100px) rotateX(1.1deg) rotateY(.4deg) translate(0,0)}}
 
-  #bg{position:absolute;inset:0;background:#101014}
+  #bg{position:absolute;inset:0;background:#000}
   /* MODO CHILL: blobs fluidos con la paleta de la portada (canvas animado al ritmo) */
   #fluidCanvas{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none;
     transition:opacity 3s ease-in-out}
   #fluidCanvas.on{opacity:.92}
+  .shaderCanvas{position:absolute;inset:0;width:100%;height:100%;opacity:0;pointer-events:none}
+  #shader-fluid{z-index:1}
+  #shader-crt{z-index:9;mix-blend-mode:multiply}
+  #shader-transition{z-index:14}
+  body.shader-fluid #fluidCanvas{display:none}
+  body.shader-crt #crt,body.shader-crt #noise{display:none!important}
   /* SIN transición: colores ABRUPTO en el beat exacto */
-  #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+  #flash{position:absolute;inset:0;z-index:2;background:#fff;opacity:0;pointer-events:none}
   #pbar{position:absolute;top:0;left:0;height:5px;width:0%;background:rgba(255,255,255,.9);z-index:6;transition:width .2s linear}
   /* ESPECTRO CRT: barras ecualizador retro abajo (solo fiesta) */
   #spectrum{position:absolute;left:0;right:0;bottom:0;height:14vh;z-index:3;pointer-events:none;
@@ -88,14 +106,19 @@
   #crt{position:absolute;inset:0;z-index:7;pointer-events:none;border-radius:2.6vmin;overflow:hidden;
     background:
       radial-gradient(ellipse 90% 24% at 50% -6%, rgba(255,255,255,.13), transparent 68%),
-      radial-gradient(ellipse 70% 45% at 15% 110%, rgba(130,190,255,.07), transparent 60%);
-    box-shadow:inset 0 0 13vmin rgba(0,0,0,.62), inset 0 0 3.2vmin rgba(0,0,0,.5)}
+      radial-gradient(ellipse 70% 45% at 15% 110%, rgba(130,190,255,.07), transparent 60%)}
   #crt::before{content:"";position:absolute;inset:0; /* scanlines */
     background:repeating-linear-gradient(0deg, rgba(0,0,0,var(--scan-op)) 0 2px, transparent 2px 5px)}
-  #crt::after{content:"";position:absolute;inset:0; /* fósforos RGB + viñeta */
+  #crt::after{content:"";position:absolute;inset:0; /* fósforos RGB */
     background:
-      radial-gradient(ellipse 130% 130% at 50% 50%, transparent 50%, rgba(0,0,0,var(--vig-op)) 100%),
       repeating-linear-gradient(90deg, rgba(255,0,0,var(--mask-op)) 0 3px, rgba(0,255,0,var(--mask-op)) 3px 6px, rgba(0,0,255,var(--mask-op)) 6px 9px)}
+  /* VIÑETA CURVA: una elipse centrada, no una caja. Solo oscurece las esquinas
+     (el color llega hasta el bisel en los lados, sin cerco interior), y sigue
+     la silueta del tubo sin el borde recto que dejaban el nodo Vignette de
+     WebGPU y el box-shadow interior del CRT. La lente la deforma con el resto
+     del cristal y conserva el control Viñeta/curvatura. */
+  #vignette{position:absolute;inset:0;z-index:10;pointer-events:none;
+    background:radial-gradient(ellipse at 50% 50%, transparent 74%, rgba(0,0,0,calc(var(--vig-op) * .6)) 100%)}
   #noise{position:absolute;inset:0;z-index:8;pointer-events:none;opacity:var(--noise-op);
     background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.5' numOctaves='2' stitchTiles='stitch'/></filter><rect width='200' height='200' filter='url(%23n)'/></svg>");
     animation:noiseShift 2.5s steps(5) infinite}
@@ -109,12 +132,12 @@
   /* transform en vez de top: la animación va al compositor (no repinta) */
   @keyframes roll{0%{transform:translateY(-18vh);opacity:0}7%{opacity:1}93%{opacity:1}100%{transform:translateY(118vh);opacity:0}}
 
-  #top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:14px;padding:3vmin 8vmin 16px 6vmin;color:var(--tc);transition:color .2s;z-index:21;background:linear-gradient(rgba(0,0,0,.28),transparent);pointer-events:none}
+  #top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:20px;padding:4vmin 8vmin 22px 6vmin;color:var(--tc);transition:color .2s;z-index:21;background:linear-gradient(rgba(0,0,0,.28),transparent);pointer-events:none}
   #top > *{pointer-events:auto}
-  #cover{width:54px;height:54px;border-radius:6px;object-fit:cover;background:rgba(255,255,255,.15)}
+  #cover{width:82px;height:82px;border-radius:9px;object-fit:cover;background:rgba(255,255,255,.15)}
   #meta{min-width:0}
-  #song{font-family:'SpaceGrotesk',sans-serif;font-weight:700;font-size:15px;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
-  #artist{font-size:13px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+  #song{font-family:'SpaceGrotesk',sans-serif;font-weight:700;font-size:21px;letter-spacing:.3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+  #artist{font-size:17px;opacity:.8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 8px rgba(0,0,0,.5)}
   #badge{position:absolute;top:16px;right:62px;font-size:11px;font-weight:700;letter-spacing:1.5px;padding:5px 10px;border-radius:2px;background:rgba(0,0,0,.45);color:#ffd54a;z-index:5;display:none;font-family:'SpaceGrotesk',sans-serif}
 
   #gear{position:fixed;top:16px;right:20px;width:44px;height:44px;border-radius:10px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.65);color:#fff;font-size:22px;cursor:pointer;z-index:100;display:flex;align-items:center;justify-content:center;pointer-events:auto !important;box-shadow:0 4px 16px rgba(0,0,0,.5);transition:transform .2s, background .2s}
@@ -133,6 +156,29 @@
   body.no-tv #tvFrame{display:none}
   body.no-tv #screen{left:0;top:0;width:100vw;height:100svh;border-radius:2.6vmin}
 
+  /* ====== DISPOSICIÓN POR DISPOSITIVO ======
+     El mueble de TV solo se ve entero si la ventana es al menos tan ancha como
+     el PNG (ratio 1.5188). En móviles y tablets verticales usamos la pantalla
+     completa: sin marco, letra a tamaño completo y controles compactos. */
+  body.compact #tvFrame{display:none}
+  body.compact #screen{left:0;top:0;width:100vw;height:100svh;border-radius:0}
+  body.compact #lyrics{padding:10svh 5vw 9svh}
+  body.compact #lyrics .line{max-width:100%}
+  body.compact #top{padding:8px 12px;gap:9px;align-items:center}
+  body.compact #cover{width:36px;height:36px;border-radius:5px}
+  body.compact #song{font-size:12px}
+  body.compact #artist{font-size:10.5px}
+  body.compact #gear{top:8px;right:8px;width:36px;height:36px;font-size:17px;border-radius:9px}
+  body.compact #moodSwitch{top:50px;right:8px}
+  body.compact #moodSwitch button{width:38px;height:30px;font-size:15px}
+  body.compact #panel{left:10px;right:10px;width:auto;top:88px;max-height:calc(100svh - 96px)}
+  body.compact #queueTicker{left:4vw;bottom:3svh;max-width:72vw;padding:5px 10px}
+  body.compact #queueText{font-size:11px}
+  body.compact #source{bottom:2px;font-size:9px;letter-spacing:1px}
+  body.compact #syncLed{right:4vw;bottom:3.4svh}
+  body.compact #toast{top:14svh;font-size:16px;padding:10px 18px;letter-spacing:2px}
+  body.compact #bigLogin{bottom:30px;padding:14px 22px;font-size:14px;max-width:86vw}
+
   /* ====== SELECTOR RÁPIDO FIESTA / FLUIDO ====== */
   #moodSwitch{position:fixed;top:70px;right:20px;z-index:99;display:flex;align-items:center;
     padding:4px;border-radius:16px;background:rgba(0,0,0,.30);
@@ -145,39 +191,79 @@
   #moodSwitch button:hover{opacity:.9}
   #moodSwitch button.active{opacity:1;background:rgba(255,255,255,.22);transform:scale(1.08)}
 
-  /* ====== PANEL DE AJUSTES — LIQUID GLASS ====== */
-  #panel{position:fixed;top:118px;right:20px;width:320px;max-height:82vh;overflow-y:auto;
-    color:#fff;border-radius:20px;padding:16px 18px;z-index:99;display:none;
+  /* ====== PANEL DE AJUSTES — LIQUID GLASS (compacto, por pestañas) ======
+     Cabecera fija + 4 pestañas + cuerpo con scroll propio: el panel ya no es
+     una columna de 1.300 px con 9 secciones, y nunca supera el alto de la
+     ventana. */
+  #panel{position:fixed;top:104px;right:20px;width:344px;max-height:calc(100svh - 124px);z-index:99;
+    display:none;flex-direction:column;overflow:hidden;
+    color:#fff;border-radius:18px;
     background:linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.05));
     -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%);
     box-shadow:0 8px 32px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.25),
                inset 0 -1px 0 rgba(255,255,255,.08);
     border:1px solid rgba(255,255,255,.22)}
-  #panel::before{content:"";position:absolute;inset:0;border-radius:20px;pointer-events:none;
+  #panel::before{content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
     background:radial-gradient(ellipse 120% 60% at 20% -10%, rgba(255,255,255,.22), transparent 55%)}
-  #panel h3{margin:14px 0 9px;font-size:10px;letter-spacing:2px;text-transform:uppercase;opacity:.75;
-    font-family:'SpaceGrotesk',sans-serif;border-bottom:1px solid rgba(255,255,255,.15);padding-bottom:5px}
-  #panel h3:first-child{margin-top:0}
-  .row{margin-bottom:10px;font-size:12.5px}
-  .row label{display:block;margin-bottom:4px;opacity:.92}
-  .row .val{float:right;opacity:.65;font-size:11px}
-  .row input[type=range]{width:100%;accent-color:#1db954}
-  .row select,.row button{width:100%;padding:8px 10px;border-radius:12px;border:1px solid rgba(255,255,255,.18);
-    font-size:12.5px;cursor:pointer;color:#fff;background:rgba(255,255,255,.10);
+  .pHead{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;
+    gap:8px;flex:0 0 auto;padding:9px 11px 8px;border-bottom:1px solid rgba(255,255,255,.10)}
+  .pHead b{font:700 10px 'SpaceGrotesk',sans-serif;letter-spacing:2.2px;text-transform:uppercase;opacity:.75}
+  .pClose{width:24px;height:24px;padding:0;border-radius:8px;border:1px solid rgba(255,255,255,.16);
+    background:rgba(255,255,255,.08);color:#fff;font-size:11px;line-height:1;cursor:pointer}
+  .pClose:hover{background:rgba(255,255,255,.2)}
+  .pTabs{position:relative;z-index:1;flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);
+    gap:3px;padding:7px 7px 0}
+  .pTab{padding:5px 2px;border-radius:8px;border:1px solid transparent;background:transparent;color:#fff;
+    font:600 9px 'SpaceGrotesk',sans-serif;letter-spacing:1.2px;text-transform:uppercase;
+    opacity:.55;cursor:pointer;transition:opacity .2s,background .2s,border-color .2s}
+  .pTab:hover{opacity:.9;background:rgba(255,255,255,.08)}
+  .pTab.on{opacity:1;background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.2)}
+  .pTab:focus-visible,.pClose:focus-visible{outline:2px solid #7fe8a4;outline-offset:1px}
+  .pBody{position:relative;z-index:1;flex:1 1 auto;min-height:0;overflow-y:auto;
+    overscroll-behavior:contain;padding:10px 12px 12px}
+  .pBody::-webkit-scrollbar{width:5px}
+  .pBody::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25);border-radius:3px}
+  .pPane{display:none}
+  .pPane.on{display:block;animation:paneIn .16s ease}
+  @keyframes paneIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+  .pPane h3{margin:11px 0 6px;padding-bottom:4px;font-size:9px;letter-spacing:1.8px;
+    text-transform:uppercase;opacity:.6;font-family:'SpaceGrotesk',sans-serif;
+    border-bottom:1px solid rgba(255,255,255,.12)}
+  .pPane h3:first-child{margin-top:0}
+  .hint{opacity:.45;font-size:10px}
+  .pNote{margin:0 0 8px;font-size:10.5px;line-height:1.35;opacity:.6}
+  .row{margin-bottom:8px;font-size:12px}
+  .row label{display:block;margin-bottom:3px;opacity:.92}
+  .row .val{float:right;opacity:.65;font-size:10.5px}
+  .row input[type=range]{width:100%;height:16px;margin:0;accent-color:#1db954}
+  .row select,.row button{width:100%;padding:6px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.18);
+    font-size:12px;cursor:pointer;color:#fff;background:rgba(255,255,255,.10);
     -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
   .row select option{background:#1a1a24;color:#fff}
   .row button:hover, .row select:hover{background:rgba(255,255,255,.18)}
-  .chk{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12.5px}
-  .chk input{accent-color:#1db954;width:15px;height:15px}
+  .chk{display:flex;align-items:center;gap:7px;margin-bottom:5px;font-size:11.5px;
+    line-height:1.25;cursor:pointer}
+  .chk input{flex:0 0 auto;width:14px;height:14px;margin:0;accent-color:#1db954}
+  .chk label{cursor:pointer}
+  .chk2{display:grid;grid-template-columns:1fr 1fr;gap:1px 10px;margin-bottom:4px}
+  .chk2 .chk{margin-bottom:3px}
+  .pBtns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:7px}
+  .pBtns.two{grid-template-columns:1fr 1fr}
+  .pBtns button{padding:7px 4px;border-radius:10px;border:1px solid rgba(255,255,255,.18);
+    background:rgba(255,255,255,.10);color:#fff;font:600 11px 'SpaceGrotesk',sans-serif;
+    cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pBtns button:hover{background:rgba(255,255,255,.18)}
+  .pBtns button.btn{background:linear-gradient(135deg,#1db954,#17a34a);border-color:transparent;font-weight:700}
+  .pCount{font-size:10.5px;opacity:.6;margin-bottom:6px;min-height:0}
+  .pFoot{border-top:1px solid rgba(255,255,255,.12);margin-top:11px;padding-top:9px}
+  .pFoot .btn2{width:100%;padding:7px 9px;border-radius:10px;border:1px solid rgba(255,255,255,.18);
+    background:rgba(255,255,255,.10);color:#fff;font-size:11.5px;cursor:pointer}
+  .pFoot .btn2:hover{background:rgba(255,255,255,.18)}
   .linklike{float:right;font-size:10px;letter-spacing:1px;color:#7fe8a4;cursor:pointer;opacity:.9;
     text-transform:none;border-bottom:1px dotted rgba(127,232,164,.6)}
   .linklike:hover{opacity:1;color:#a5f5c1}
-  .crt-group{border-left:2px solid rgba(255,255,255,.08);padding-left:10px}
   .btn{background:linear-gradient(135deg,#1db954,#17a34a);color:#fff;font-weight:700;border:none}
   .btn2{background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.18)}
-  #panel::-webkit-scrollbar{width:5px}
-  #panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.25);border-radius:3px}
-
   /* ====== AUTO-HIDE UI ====== */
   #top,#gear,#badge,#source,#syncLed,#queueTicker{transition:opacity .8s ease}
   body.ui-hidden #top, body.ui-hidden #gear, body.ui-hidden #badge,
@@ -186,11 +272,11 @@
   /* ====== TICKER DE COLA (abajo-izquierda) ====== */
   #queueTicker{position:absolute;left:6vmin;bottom:4.4vmin;z-index:21;display:flex;align-items:center;gap:9px;
     max-width:44vw;font-family:'SpaceGrotesk',sans-serif;color:var(--tc);text-shadow:0 1px 5px rgba(0,0,0,.5);
-    padding:7px 13px;border-radius:14px;background:rgba(0,0,0,.22);
+    padding:10px 18px;border-radius:16px;background:rgba(0,0,0,.22);
     -webkit-backdrop-filter:blur(14px) saturate(160%);backdrop-filter:blur(14px) saturate(160%);
     border:1px solid rgba(255,255,255,.14)}
-  #queueLabel{font-size:9px;font-weight:700;letter-spacing:1.5px;opacity:.7;white-space:nowrap}
-  #queueText{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.95}
+  #queueLabel{font-size:12px;font-weight:700;letter-spacing:1.5px;opacity:.7;white-space:nowrap}
+  #queueText{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.95}
 
   /* ====== OJO DE PEZ: SOLO filtro por píxel. La deformación la hace el
        feDisplacementMap (lente SVG) sobre #lensTarget. El texto va SIEMPRE plano. */
@@ -199,34 +285,45 @@
     transform:scale(.94);filter:blur(.4px);opacity:.36}
   /* ====== LETRA ====== */
   #lyrics{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:11vh 6vw;color:var(--tc);transition:color .15s;z-index:2;pointer-events:none}
-  #lyrics .line{text-align:center;margin:0 auto;display:inline-block;max-width:100%;white-space:nowrap}
+  #lyrics .line{text-align:center;margin:0 auto;display:inline-block;max-width:100%;
+    white-space:normal;text-wrap:balance;word-spacing:var(--word-spacing,.55em)}
+  /* El título no usa el espaciado entre palabras de la letra: con emojis y
+     fuentes grandes crea huecos enormes y parece descentrado. */
+  #lyrics .line.title{word-spacing:normal}
   #lyrics.no-glow .line{text-shadow:none}
   #lyrics.upper .line{text-transform:uppercase}
   @keyframes song-flash {
     0%{opacity:1;text-shadow:none}
     40%{opacity:.85;text-shadow:0 0 6vw #fff}
-    100%{opacity:.3;text-shadow:none}
+    100%{opacity:1;text-shadow:none}
   }
   #lyrics.song-flash .line{animation:song-flash .5s ease-out forwards}
 
   /* huevo: sin fósforos RGB (se queda la viñeta) */
-  .line{font-family:var(--lyric-font);font-size:var(--fs);line-height:1.45;max-width:88vw;
+  .line{font-family:var(--lyric-font);font-size:var(--fs);line-height:1.45;max-width:100%;
       overflow-wrap:normal;word-break:keep-all;hyphens:none;-webkit-hyphens:none;
       text-shadow:var(--lyric-shadow, 0 0 2.5vmin rgba(255,255,255,.14))}
-  /* spans del word-spacing (espacios): inline-block para que margin funcione */
+  /* El espaciado entre palabras usa espacios de texto + --word-spacing: así
+     un salto de línea colapsa el espacio y no descentra la línea. */
   /* SUBTÍTULO: más pequeño y opaco (backs/paréntesis) */
   .line.back{font-size:calc(var(--fs) * .5);opacity:.45;line-height:1.2;
     text-shadow:none;letter-spacing:0}
+  /* KARAOKE (Spicy Lyrics): capa base tenue + relleno recortado por --p */
+  .line .w{position:relative;display:inline-block;vertical-align:baseline}
+  .line .w>.wb{opacity:.45}
+  .line .w>.wf{position:absolute;left:0;top:0;width:100%;pointer-events:none;
+    clip-path:inset(0 calc((1 - var(--p,0)) * 100%) 0 0)}
+  .line .w.sung>.wb{opacity:.9}
   /* durante easter egg: ocultar el back (no aplica) */
   #lyrics.egg .line.back{display:none}
   /* durante song-flash: el back hereda la animación */
   #lyrics.song-flash .line.back{animation:song-flash .5s ease-out forwards}
   #lineNone{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:8vw;font-size:calc(var(--fs)*.5);color:var(--tc);z-index:2;font-family:'SpaceGrotesk',sans-serif;font-weight:700;transition:color .15s;pointer-events:none}
   #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;padding:8vw;font-size:clamp(18px,3.4vw,34px);color:var(--tc);z-index:3;font-family:'SpaceGrotesk',sans-serif;font-weight:700;line-height:1.6;white-space:pre-line;transition:color .15s;text-shadow:0 0 3vmin rgba(255,255,255,.14);pointer-events:none}
-  #source{position:absolute;bottom:9px;left:0;right:0;text-align:center;font-size:11px;opacity:.55;color:var(--tc);z-index:4;font-family:'SpaceGrotesk',sans-serif;letter-spacing:1.5px;transition:color .15s;text-shadow:0 1px 6px rgba(0,0,0,.45)}
+  #source{position:absolute;bottom:9px;left:0;right:0;text-align:center;font-size:14px;opacity:.55;color:var(--tc);z-index:4;font-family:'SpaceGrotesk',sans-serif;letter-spacing:1.5px;transition:color .15s;text-shadow:0 1px 6px rgba(0,0,0,.45)}
   #syncLed{position:absolute;right:5.4vmin;bottom:4.6vmin;z-index:21;display:flex;align-items:center;gap:7px;
-    font:700 10px/1 'SpaceGrotesk',sans-serif;letter-spacing:1px;color:var(--tc);text-shadow:0 1px 5px #000}
-  #syncLed i{width:10px;height:10px;border-radius:50%;background:#ff3647;box-shadow:0 0 7px #ff3647}
+    font:700 13px/1 'SpaceGrotesk',sans-serif;letter-spacing:1px;color:var(--tc);text-shadow:0 1px 5px #000}
+  #syncLed i{width:13px;height:13px;border-radius:50%;background:#ff3647;box-shadow:0 0 7px #ff3647}
   #syncLed.waiting i{background:#ffc43d;box-shadow:0 0 7px #ffc43d}
   #syncLed.synced i{background:#41f37b;box-shadow:0 0 9px #41f37b}
   #syncLed.offline i{animation:ledBlink .8s steps(2,end) infinite}
@@ -294,8 +391,7 @@
   .vinyl-cover{position:absolute;top:50%;left:50%;width:22vmin;height:22vmin;border-radius:50%;
     object-fit:cover;transform:translate(-50%,-50%);box-shadow:0 0 40px rgba(0,0,0,.5)}
   #transOverlay.anim-vinyl .vinyl{animation:vinylSpin 1.2s cubic-bezier(.65,0,.35,1) forwards}
-  #transOverlay.anim-vinyl .vinyl-hole{animation:none}
-  #transOverlay.anim-vinyl .vinyl-cover{animation:coverPop 1.2s cubic-bezier(.65,0,.35,1) forwards}
+  #transOverlay.anim-vinyl .vinyl-hole{animation:none}    #transOverlay.anim-vinyl .vinyl-cover{animation:coverPop 1.2s cubic-bezier(.65,0,.35,1) forwards}
   @keyframes vinylSpin{
     0%{transform:translate(-50%,-50%) rotate(0deg) scale(.2);opacity:0}
     18%{opacity:1}
@@ -307,32 +403,50 @@
     45%{opacity:1}
     75%{opacity:1;transform:translate(-50%,-50%) scale(1)}
     100%{opacity:0;transform:translate(-50%,-50%) scale(.4)}}
+
+  /* Teclado visible y foco consistente (el panel se abre con A o coma). */
+  :where(button, select, input, .linklike):focus-visible{
+    outline:2px solid #7fe8a4; outline-offset:2px;
+  }
+  /* Respeta la preferencia del sistema: sin parpadeos ni transiciones largas.
+     La app sigue funcionando; solo se elimina el movimiento decorativo. */
+  @media (prefers-reduced-motion: reduce){
+    html,body,#screen,#noise,#refresh,#syncLed.offline i,
+    #lyrics.song-flash .line,#channel.on #chanStatic,#channel.on #chanBars,
+    #transOverlay.anim-shutter .shut,#transOverlay.anim-shutter .shut-label,
+    #transOverlay.anim-vinyl .vinyl,#transOverlay.anim-vinyl .vinyl-cover{
+      animation:none!important;
+    }
+    .line,#toast,#gear,#top{transition:none!important}
+  }
 </style>
 </head>
 <body>
 <div id="tvFrame"></div>
 <div id="screen">
+ <div id="lensTarget">
  <div id="bgLayer">
   <div id="bg"></div>
   <canvas id="fluidCanvas"></canvas>
+  <canvas id="shader-fluid" class="shaderCanvas" aria-hidden="true" style="width:100%;height:100%"></canvas>
   <div id="flash"></div>
  </div>
- <div id="lensTarget">
+  <div id="lyrics">
+    <div class="line main" id="lCur"></div>
+    <div class="line back" id="lBack" style="display:none"></div>
+  </div>
+ <div id="uiLayer">
   <div id="top">
     <img id="cover" alt="">
     <div id="meta"><div id="song">—</div><div id="artist">—</div></div>
   </div>
   <div id="badge">DEMO</div>
-  <div id="lyrics">
-    <div class="line main" id="lCur"></div>
-    <div class="line back" id="lBack" style="display:none"></div>
-  </div>
   <div id="lineNone">NO LYRICS</div>
   <div id="msg"></div>
-  <div id="source">LETRAS: LRCLIB + SPOTIFY + LYRICS.OVH · RITMO: AUDIO ANALYSIS</div>
+  <div id="source">LETRAS: SPICY LYRICS + SPOTIFY + LRCLIB + LYRICS.OVH · RITMO: AUDIO ANALYSIS</div>
   <div id="queueTicker"><span id="queueLabel">A CONTINUACIÓN</span><span id="queueText"></span></div>
-  <div id="syncLed" class="offline" title="Estado de sincronización"><i></i><span id="syncText">OFFLINE</span></div>
- </div><!-- /lensTarget -->
+  <div id="syncLed" class="offline" role="status" aria-live="polite" title="Estado de sincronización"><i></i><span id="syncText">OFFLINE</span></div>
+ </div><!-- /uiLayer -->
  <div id="fxLayer">
   <div id="crt"></div>
   <div id="noise"></div>
@@ -351,145 +465,234 @@
   <div id="spectrum"></div>
   <div id="qrOverlay"><div id="qrBox"></div><div id="qrHint">Escanea para votar la siguiente canción 🎵</div></div>
   <div id="transOverlay"></div>
+  <canvas id="shader-crt" class="shaderCanvas" aria-hidden="true" style="width:100%;height:100%"></canvas>
+  <canvas id="shader-transition" class="shaderCanvas" aria-hidden="true" style="width:100%;height:100%"></canvas>
+  <div id="vignette" aria-hidden="true"></div>
+ </div><!-- /lensTarget -->
 </div>
 
-<button id="gear" title="Ajustes (Tecla A)" aria-label="Abrir panel de ajustes">⚙</button>
-<div id="moodSwitch" title="Cambiar entre fiesta y fluido">
-  <button id="moodParty" title="Fiesta: flashes al beat" aria-label="Modo fiesta">🎉</button>
-  <button id="moodChill" title="Fluido: colores de la portada" aria-label="Modo fluido">🌊</button>
+<button id="gear" title="Ajustes (Tecla A)" aria-label="Abrir panel de ajustes" aria-controls="panel" aria-expanded="false">⚙</button>
+<div id="moodSwitch" role="group" aria-label="Selector de modo visual" title="Cambiar entre fiesta y fluido">
+  <button id="moodParty" title="Fiesta: flashes al beat" aria-label="Modo fiesta" aria-pressed="false">🎉</button>
+  <button id="moodChill" title="Fluido: colores de la portada" aria-label="Modo fluido" aria-pressed="false">🌊</button>
 </div>
-<div id="panel" style="display:none">
-    <h3>🎨 Temas</h3>
-    <div class="row"><label>Tema completo (paleta+CRT+fuente)</label>
-      <select id="themeSel">
-        <option value="classic">🎉 Clásico</option>
-        <option value="vaporwave">🌴 Vaporwave</option>
-        <option value="matrix">💚 Matrix</option>
-        <option value="snes">🎮 Super Nintendo</option>
-      </select></div>
-
-    <h3>Letra</h3>
-    <div class="row"><label>Tamaño: <span class="val" id="fsVal">7</span></label>
-      <input id="fsRange" type="range" min="3" max="16" step="0.5" value="7"></div>
-    <div class="row"><label>Fuente</label>
-      <select id="fontSel">
-        <option value="arcade">Arcade Classic</option>
-        <option value="grotesk">Space Grotesk</option>
-        <option value="impact">Impact (memes)</option>
-        <option value="courier">Courier (terminal)</option>
-        <option value="georgia">Georgia (serif)</option>
-        <option value="system">Sistema</option>
-      </select></div>
-    <div class="row"><label>Palabras por frase: <span class="val" id="phraseVal">4</span></label>
-      <input id="phraseRng" type="range" min="1" max="8" step="1" value="4"></div>
-    <div class="row"><label>Espacio entre palabras: <span class="val" id="wordSpVal">1.0×</span></label>
-      <input id="wordSpRng" type="range" min="0" max="3" step="0.1" value="1"></div>
-    <div class="row"><label>Intensidad ojo de pez: <span class="val" id="lensVal">12</span></label>
-      <input id="lensRng" type="range" min="0" max="40" step="2" value="12"></div>
-    <div class="chk"><input id="upperChk" type="checkbox"> MAYÚSCULAS</div>
-    <div class="row"><label>Grosor del borde: <span class="val" id="strokeVal">2</span></label>
-      <input id="strokeRng" type="range" min="0" max="6" step="1" value="2"></div>
-    <div class="row"><label>Sombra: <span class="val" id="shadowVal">50</span></label>
-      <input id="shadowRng" type="range" min="0" max="100" step="1" value="50"></div>
-
-    <h3>Color y ritmo</h3>
-    <div class="row"><label>Cambio de color</label>
-      <select id="ctiming">
-        <option value="bars">Downbeats — exacto a beatdrops</option>
-        <option value="beats">Cada beat (frenético)</option>
-        <option value="sections">Solo drops</option>
-      </select></div>
-    <div class="row"><label>Paleta</label>
-      <select id="cmode">
-        <option value="rgb">RGB intenso (recomendado)</option>
-        <option value="pastel">Pastel suave</option>
-        <option value="neon">Neón eléctrico</option>
-        <option value="sunset">Atardecer</option>
-        <option value="ocean">Océano</option>
-        <option value="byn">Blanco y negro</option>
-      </select></div>
-    <div class="row"><label>Fuerza del flash: <span class="val" id="flashVal">40</span></label>
-      <input id="flashRng" type="range" min="0" max="100" step="5" value="40"></div>
-    <div class="chk"><input id="pulseColorChk" type="checkbox" checked> Pulso DEL COLOR en cada beat (fluido)</div>
-    <div class="chk"><input id="pulseWhiteChk" type="checkbox"> Flash blanco en cada beat (fiesta)</div>
-    <div class="row"><label>Modo visual</label>
-      <select id="moodSel">
-        <option value="auto">Auto (detecta baladas)</option>
-        <option value="party">Fiesta siempre (flashes)</option>
-        <option value="chill">Fluido siempre (portada)</option>
-      </select></div>
-    <div class="chk"><input id="moodChk" type="checkbox" checked> Sugerir chill por palabras clave</div>
-
-    <h3>✨ Extras</h3>
-    <div class="chk"><input id="trailsChk" type="checkbox" checked> Estelas de nebulosa (fluido)</div>
-    <div class="chk"><input id="spectrumChk" type="checkbox"> Barras ecualizador retro (fiesta)</div>
-    <div class="chk"><input id="bounceChk" type="checkbox"> Letra con rebote al beat</div>
-    <div class="chk"><input id="dropChk" type="checkbox" checked> Explosión de partículas en drops</div>
-    <div class="chk"><input id="smartChk" type="checkbox" checked> Contraste inteligente por zonas</div>
-    <div class="chk"><input id="qrChk" type="checkbox"> QR para votar canciones (tecla Q)</div>
-    <div class="chk"><input id="transChk" type="checkbox"> Traducción de letras extranjeras</div>
-    <div class="chk"><input id="autoQChk" type="checkbox" checked> Calidad automática (&gt;100 fps)</div>
-
-    <h3>📺 Retro CRT <span id="crtAll" class="linklike">todo / nada</span></h3>
-    <div class="crt-group" id="crtGroup">
-    <div class="chk"><input id="scanChk" type="checkbox" checked> Scanlines</div>
-    <div class="row"><label>Scanlines: <span class="val" id="scanVal">70</span></label>
-      <input id="scanRng" type="range" min="0" max="100" step="1" value="70"></div>
-    <div class="row"><label>Fósforos RGB: <span class="val" id="maskVal">60</span></label>
-      <input id="maskRng" type="range" min="0" max="100" step="1" value="60"></div>
-    <div class="row"><label>Viñeta/curvatura: <span class="val" id="vigVal">70</span></label>
-      <input id="vigRng" type="range" min="0" max="100" step="1" value="70"></div>
-    <div class="row"><label>Ruido: <span class="val" id="noiseVal">50</span></label>
-      <input id="noiseRng" type="range" min="0" max="100" step="1" value="50"></div>
-    <div class="chk"><input id="flickChk" type="checkbox" checked> Flicker</div>
-    <div class="chk"><input id="tiltChk" type="checkbox" checked> Inclinación de pantalla</div>
-    <div class="chk"><input id="refChk" type="checkbox" checked> Banda de refresco</div>
-    <div class="chk"><input id="fishChk" type="checkbox" checked> Ojo de pez (letra cóncava)</div>
-    <div class="chk"><input id="tvChk" type="checkbox" checked> Mueble de TV vintage (imagen)</div>
+<div id="panel" style="display:none" role="dialog" aria-label="Ajustes de FIESTA" aria-hidden="true">
+    <div class="pHead">
+      <b>⚙ Ajustes</b>
+      <button id="panelClose" class="pClose" type="button" aria-label="Cerrar ajustes" title="Cerrar (Esc)">✕</button>
     </div>
 
-    <h3>Efectos</h3>
-    <div class="row"><label>Transición al cambiar canción</label>
-      <select id="transSel">
-        <option value="tv">📺 TV antigua (barras + estática)</option>
-        <option value="shutter">🎬 Obturador de cine</option>
-        <option value="vinyl">💿 Vinilo con la portada</option>
-        <option value="flashcolor">🌈 Flash de color</option>
-        <option value="none">Sin transición</option>
-      </select></div>
-    <div class="row"><button id="testChan" class="btn2">Probar transición</button></div>
+    <div class="pTabs" role="tablist" aria-label="Secciones de ajustes">
+      <button class="pTab" type="button" role="tab" id="tab-letra" data-tab="letra" aria-selected="true" aria-controls="pane-letra">Letra</button>
+      <button class="pTab" type="button" role="tab" id="tab-ritmo" data-tab="ritmo" aria-selected="false" aria-controls="pane-ritmo" tabindex="-1">Ritmo</button>
+      <button class="pTab" type="button" role="tab" id="tab-crt" data-tab="crt" aria-selected="false" aria-controls="pane-crt" tabindex="-1">CRT</button>
+      <button class="pTab" type="button" role="tab" id="tab-guardar" data-tab="guardar" aria-selected="false" aria-controls="pane-guardar" tabindex="-1">Guardar</button>
+    </div>
 
-    <h3>💾 Presets por música</h3>
-    <div class="chk"><input id="globalLockChk" type="checkbox"> 🔒 Override global (los presets NO cambian nada)</div>
-    <div class="row" style="font-size:11px;opacity:.7;line-height:1.4">
-      Guarda cómo se ve AHORA y se aplicará solo cuando suene esta canción, artista o álbum.
-      Con el override global activo, los presets quedan desactivados.</div>
-    <div class="row"><button id="savePresetSong" class="btn2">🎵 Guardar para ESTA canción</button></div>
-    <div class="row"><button id="savePresetArtist" class="btn2">🎤 Guardar para este ARTISTA</button></div>
-    <div class="row"><button id="savePresetAlbum" class="btn2">💿 Guardar para este ÁLBUM</button></div>
-    <div class="row"><span id="presetCount" style="font-size:11px;opacity:.6"></span></div>
-    <div class="row"><button id="dumpPresets" class="btn2">🔍 Ver presets guardados</button></div>
-    <pre id="presetDump" style="font-size:10px;max-height:180px;overflow:auto;background:rgba(0,0,0,.4);border-radius:8px;padding:8px;display:none;white-space:pre-wrap"></pre>
-    <div class="row"><button id="clearPresets" class="btn2">🗑 Borrar todos los presets</button></div>
+    <div class="pBody">
+      <!-- ============ LETRA ============ -->
+      <section class="pPane" id="pane-letra" role="tabpanel" aria-labelledby="tab-letra">
+        <div class="row"><label for="themeSel">Tema completo <span class="hint">· paleta + CRT + fuente</span></label>
+          <select id="themeSel">
+            <option value="classic">🎉 Clásico</option>
+            <option value="vaporwave">🌴 Vaporwave</option>
+            <option value="matrix">💚 Matrix</option>
+            <option value="snes">🎮 Super Nintendo</option>
+          </select></div>
 
-    <h3>🌊 Fluido: paleta manual</h3>
-    <div class="chk"><input id="customPalChk" type="checkbox"> Usar paleta manual (ignora portada)</div>
-    <div id="palPickers" style="display:flex;gap:6px;margin-bottom:8px"></div>
-    <div class="row"><button id="palRandom" class="btn2">🎲 Colores aleatorios</button></div>
-    <div class="row"><button id="resetBtn" class="btn2">↺ Restablecer configuración</button></div>
+        <h3>Texto</h3>
+        <div class="row"><label for="fontSel">Fuente</label>
+          <select id="fontSel">
+            <option value="arcade">Arcade Classic</option>
+            <option value="grotesk">Space Grotesk</option>
+            <option value="impact">Impact (memes)</option>
+            <option value="courier">Courier (terminal)</option>
+            <option value="georgia">Georgia (serif)</option>
+            <option value="system">Sistema</option>
+          </select></div>
+        <div class="row"><label for="fsRange">Tamaño: <span class="val" id="fsVal">7</span></label>
+          <input id="fsRange" type="range" min="3" max="16" step="0.5" value="7"></div>
+        <div class="row"><label for="phraseRng">Palabras por frase (máx. 4): <span class="val" id="phraseVal">4</span></label>
+          <input id="phraseRng" type="range" min="1" max="4" step="1" value="4"></div>
+        <div class="row"><label for="wordSpRng">Espacio entre palabras: <span class="val" id="wordSpVal">1.0×</span></label>
+          <input id="wordSpRng" type="range" min="0" max="3" step="0.1" value="1"></div>
+        <div class="chk"><input id="upperChk" type="checkbox"><label for="upperChk">MAYÚSCULAS</label></div>
 
-    <h3>Cuenta</h3>
-    <div class="row"><button id="loginBtn" class="btn">Conectar con Spotify</button></div>
-    <div class="row"><button id="logoutBtn" class="btn2">Desconectar</button></div>
+        <h3>Legibilidad</h3>
+        <div class="row"><label for="strokeRng">Grosor del borde: <span class="val" id="strokeVal">2</span></label>
+          <input id="strokeRng" type="range" min="0" max="6" step="1" value="2"></div>
+        <div class="row"><label for="shadowRng">Sombra: <span class="val" id="shadowVal">50</span></label>
+          <input id="shadowRng" type="range" min="0" max="100" step="1" value="50"></div>
+
+        <h3>Doble pantalla</h3>
+        <div id="translationSetup">
+          <p class="pNote">Abre otra ventana con la traducción en grande. Muévela a tu segunda pantalla.</p>
+          <div class="row"><label for="translationFrom">Idioma de la canción</label><select id="translationFrom"></select></div>
+          <div class="row"><label for="translationTo">Traducir a</label><select id="translationTo"></select></div>
+        </div>
+        <div class="row"><button id="dualScreenBtn" class="btn2" type="button">▣ Abrir segunda pantalla</button></div>
+        <p id="translationStatus" class="pNote" role="status" aria-live="polite"></p>
+      </section>
+
+      <!-- ============ RITMO ============ -->
+      <section class="pPane" id="pane-ritmo" role="tabpanel" aria-labelledby="tab-ritmo">
+        <h3>Color y beat</h3>
+        <div class="row"><label for="cmode">Paleta</label>
+          <select id="cmode">
+            <option value="rgb">RGB intenso (recomendado)</option>
+            <option value="pastel">Pastel suave</option>
+            <option value="neon">Neón eléctrico</option>
+            <option value="sunset">Atardecer</option>
+            <option value="ocean">Océano</option>
+            <option value="byn">Blanco y negro</option>
+          </select></div>
+        <div class="row"><label for="ctiming">Cambio de color</label>
+          <select id="ctiming">
+            <option value="bars">Cada compás</option>
+            <option value="beats">Cada beat (frenético)</option>
+            <option value="sections">Cambios de sección (si hay análisis)</option>
+          </select></div>
+        <div class="row"><label for="flashRng">Fuerza del flash: <span class="val" id="flashVal">40</span></label>
+          <input id="flashRng" type="range" min="0" max="100" step="5" value="40"></div>
+        <div class="chk"><input id="pulseColorChk" type="checkbox" checked><label for="pulseColorChk">Pulso de color</label></div>
+        <div class="chk"><input id="pulseWhiteChk" type="checkbox"><label for="pulseWhiteChk">Flash blanco al beat <span class="hint">fiesta</span></label></div>
+
+        <h3>Sincronización</h3>
+        <div class="row"><label for="rhythmInput">Fuente del ritmo</label><select id="rhythmInput">
+          <option value="loopback">Percusión del PC · sin micrófono</option>
+          <option value="grid">Mapa de Spotify / calibración manual</option>
+        </select></div>
+        <p id="audioStatus" class="pNote" role="status">Esperando audio…</p>
+        <div class="row"><label for="genreSelect">Género de esta canción</label><select id="genreSelect">
+          <option value="auto">Automático · sugerencia por etiquetas</option>
+          <option value="salsa">Salsa</option><option value="bachata">Bachata</option>
+          <option value="reggaeton">Reguetón</option><option value="merengue">Merengue</option>
+          <option value="cumbia">Cumbia</option><option value="electronic">Electrónica</option>
+          <option value="pop">Pop</option><option value="rock">Rock</option>
+          <option value="mixed">Mixto / otro</option>
+        </select></div>
+        <p id="genreStatus" class="pNote" role="status">Sin clasificación todavía.</p>
+        <p class="pNote">Se analiza la salida predeterminada de Windows, incluidos otros sonidos del PC.
+          Salsa, bachata y reguetón suelen usar 4/4; el género no fija el BPM ni el primer tiempo.</p>
+        <p id="rhythmStatus" class="pNote" role="status">Esperando canción…</p>
+        <div class="row"><label for="flashOffset">Adelantar / retrasar flashes: <span id="flashOffsetVal" class="val">0 ms</span></label>
+          <input id="flashOffset" type="range" min="-500" max="500" step="10" value="0"></div>
+        <p class="pNote">Positivo adelanta el mapa; negativo retrasa. En audio directo solo se aplica el retraso:
+          no se puede anticipar un golpe que aún no ha sonado. Se guarda por canción.</p>
+        <div class="row"><button id="tapBeat" class="btn2" type="button">Marcar beat · pulsa 4 veces al ritmo</button></div>
+        <div class="row"><button id="resetRhythm" class="btn2" type="button">Restaurar ritmo de la canción</button></div>
+
+        <h3>Modo visual</h3>
+        <div class="row"><label for="moodSel">Fiesta / fluido</label>
+          <select id="moodSel">
+            <option value="auto">Auto (detecta baladas)</option>
+            <option value="party">Fiesta siempre (flashes)</option>
+            <option value="chill">Fluido siempre (portada)</option>
+          </select></div>
+        <div class="chk"><input id="moodChk" type="checkbox" checked><label for="moodChk">Sugerir chill por palabras clave</label></div>
+        <div class="row"><label for="fluidStyleSel">Fondo fluido</label>
+          <select id="fluidStyleSel">
+            <option value="flow">Fluido orgánico</option>
+            <option value="swirl">Remolino</option>
+            <option value="plasma">Plasma</option>
+            <option value="aurora">Aurora</option>
+          </select></div>
+
+        <h3>Efectos</h3>
+        <div class="chk2">
+          <div class="chk"><input id="trailsChk" type="checkbox" checked><label for="trailsChk" title="Estelas de nebulosa en el fluido">Estelas</label></div>
+          <div class="chk"><input id="spectrumChk" type="checkbox"><label for="spectrumChk" title="Barras de ecualizador retro (solo fiesta)">Espectro</label></div>
+          <div class="chk"><input id="bounceChk" type="checkbox"><label for="bounceChk" title="La letra late con el beat">Rebote beat</label></div>
+          <div class="chk"><input id="dropChk" type="checkbox" checked><label for="dropChk" title="Explosión de partículas en los drops">Drops</label></div>
+          <div class="chk"><input id="smartChk" type="checkbox" checked><label for="smartChk" title="Contraste inteligente por zonas">Contraste</label></div>
+          <div class="chk"><input id="qrChk" type="checkbox"><label for="qrChk" title="QR para votar canciones (tecla Q)">QR votar</label></div>
+          <div class="chk"><input id="autoQChk" type="checkbox" checked><label for="autoQChk" title="Baja la calidad sola si no se sostienen 100 fps">Auto-fps</label></div>
+        </div>
+
+        <h3>Transición de canción</h3>
+        <div class="row"><select id="transSel" aria-label="Transición al cambiar canción">
+            <option value="tv">📺 TV antigua (barras + estática)</option>
+            <option value="shutter">🎬 Obturador de cine</option>
+            <option value="vinyl">💿 Vinilo con la portada</option>
+            <option value="flashcolor">🌈 Flash de color</option>
+            <option value="none">Sin transición</option>
+          </select></div>
+        <div class="row"><button id="testChan" class="btn2" type="button">▶ Probar transición</button></div>
+      </section>
+
+      <!-- ============ CRT ============ -->
+      <section class="pPane" id="pane-crt" role="tabpanel" aria-labelledby="tab-crt">
+        <h3>📺 Retro CRT <span id="crtAll" class="linklike">todo / nada</span></h3>
+        <div class="chk2">
+          <div class="chk"><input id="scanChk" type="checkbox" checked><label for="scanChk">Scanlines</label></div>
+          <div class="chk"><input id="flickChk" type="checkbox" checked><label for="flickChk">Flicker</label></div>
+          <div class="chk"><input id="tiltChk" type="checkbox" checked><label for="tiltChk">Inclinación</label></div>
+          <div class="chk"><input id="refChk" type="checkbox" checked><label for="refChk" title="Banda de refresco">Refresco</label></div>
+          <div class="chk"><input id="fishChk" type="checkbox" checked><label for="fishChk" title="Ojo de pez: letra cóncava (lente por píxel)">Ojo de pez</label></div>
+          <div class="chk"><input id="tvChk" type="checkbox" checked><label for="tvChk" title="Mueble de TV vintage (imagen)">Mueble TV</label></div>
+        </div>
+
+        <h3>Intensidad</h3>
+        <div class="row"><label for="scanRng">Scanlines: <span class="val" id="scanVal">70</span></label>
+          <input id="scanRng" type="range" min="0" max="100" step="1" value="70"></div>
+        <div class="row"><label for="maskRng">Fósforos RGB: <span class="val" id="maskVal">60</span></label>
+          <input id="maskRng" type="range" min="0" max="100" step="1" value="60"></div>
+        <div class="row"><label for="vigRng">Viñeta/curvatura: <span class="val" id="vigVal">70</span></label>
+          <input id="vigRng" type="range" min="0" max="100" step="1" value="70"></div>
+        <div class="row"><label for="noiseRng">Ruido: <span class="val" id="noiseVal">50</span></label>
+          <input id="noiseRng" type="range" min="0" max="100" step="1" value="50"></div>
+
+        <h3>Ojo de pez</h3>
+        <div class="row"><label for="lensRng">Intensidad de la lente: <span class="val" id="lensVal">12</span></label>
+          <input id="lensRng" type="range" min="0" max="40" step="2" value="12"></div>
+      </section>
+
+      <!-- ============ GUARDAR ============ -->
+      <section class="pPane" id="pane-guardar" role="tabpanel" aria-labelledby="tab-guardar">
+        <h3>💾 Presets por música</h3>
+        <div class="chk"><input id="globalLockChk" type="checkbox"><label for="globalLockChk">🔒 Override global <span class="hint">los presets no cambian nada</span></label></div>
+        <p class="pNote">Guarda cómo se ve AHORA y se aplicará solo cuando suene esta canción, artista o álbum.</p>
+        <div class="pBtns">
+          <button id="savePresetSong" class="btn2" type="button" title="Guardar para ESTA canción">🎵 Canción</button>
+          <button id="savePresetArtist" class="btn2" type="button" title="Guardar para este ARTISTA">🎤 Artista</button>
+          <button id="savePresetAlbum" class="btn2" type="button" title="Guardar para este ÁLBUM">💿 Álbum</button>
+        </div>
+        <div class="pCount" id="presetCount"></div>
+        <div class="pBtns two">
+          <button id="dumpPresets" class="btn2" type="button">🔍 Ver guardados</button>
+          <button id="clearPresets" class="btn2" type="button">🗑 Borrar todos</button>
+        </div>
+        <pre id="presetDump" style="font-size:10px;max-height:150px;overflow:auto;background:rgba(0,0,0,.4);border-radius:8px;padding:8px;display:none;white-space:pre-wrap"></pre>
+
+        <h3>🌊 Fluido: paleta manual</h3>
+        <div class="chk"><input id="customPalChk" type="checkbox"><label for="customPalChk">Paleta manual (ignora portada)</label></div>
+        <div id="palPickers" style="display:flex;gap:6px;margin-bottom:8px"></div>
+        <div class="row"><button id="palRandom" class="btn2" type="button">🎲 Colores aleatorios</button></div>
+
+        <h3>Cuenta</h3>
+        <div class="pBtns two">
+          <button id="loginBtn" class="btn" type="button">Conectar Spotify</button>
+          <button id="logoutBtn" class="btn2" type="button">Desconectar</button>
+        </div>
+
+        <div class="pFoot">
+          <button id="resetBtn" class="btn2" type="button">↺ Restablecer configuración</button>
+        </div>
+      </section>
+    </div>
   </div>
 
 
 <script>
 const $ = id => document.getElementById(id);
+const REDUCED_MOTION = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+const TRANSLATION_DISPLAY = new URLSearchParams(location.search).get("display") === "translation";
 let S = null, curTrack = null, lineIdx = -1, lastShown = null;
+let lyricsFrozen = false, lastServerKey = null;
 let beatPtr = 0, barPtr = 0, secPtr = 0;
 let playing = false;
 let pos = 0, posAt = 0, speed = 0;       // reloj local con corrección de fase
+let clockCorrection = 0, rhythmEpoch = 0;
 
 const FONTS = {
   arcade: "'ArcadeClassic',monospace",
@@ -531,10 +734,10 @@ const CFG_DEFAULTS = {
   autoMood: true, moodOverride: "auto",
   // ---- nuevas funciones (todas opcionales) ----
   theme: "classic",        // tema completo aplicado
-  translate: false,        // línea secundaria traducida
   smartContrast: true,     // contraste por zonas vs global
   qrEnabled: false,        // tecla Q muestra QR para votar
   trails: true,            // estelas de nebulosa en el fluido
+  fluidStyle: "flow",      // shaders.com: FlowingGradient / Swirl / Plasma / Aurora
   spectrum: false,         // barras ecualizador retro (solo fiesta)
   beatBounce: false,       // la letra late con el beat (escala 1.00→1.02)
   dropFx: true,            // explosión de partículas en el drop
@@ -581,21 +784,62 @@ try {
 } catch (e) { /* localStorage bloqueado */ }
 // La paleta debe reaccionar al beat real, no a barras antiguas guardadas.
 if (!cfg.timing) cfg.timing = "beats";
+// MÁXIMO 4 PALABRAS grandes en pantalla: se sanea también lo que quedase
+// guardado con el slider antiguo (1..8).
+cfg.phrase = Math.max(1, Math.min(4, Math.round(+cfg.phrase || 4)));
 
 /* ---------- controles ---------- */
 function togglePanel(show) {
   const p = $("panel");
   if (!p) return;
-  const isHidden = (show !== undefined) ? !show : (p.style.display === "none" || !p.style.display);
-  p.style.display = isHidden ? "block" : "none";
-  if (p.style.display === "block") wakeUI();
+  const visible = (show !== undefined) ? !!show : (p.style.display === "none" || !p.style.display);
+  p.style.display = visible ? "flex" : "none";
+  p.setAttribute("aria-hidden", String(!visible));
+  const gear = $("gear");
+  if (gear) gear.setAttribute("aria-expanded", String(visible));
+  if (visible) wakeUI();
 }
+/* ---------- PESTAÑAS DEL PANEL ----------
+   Cuatro pestañas (Letra / Ritmo / CRT / Guardar) para que el panel no sea una
+   columna larga: solo se pinta el grupo que se esta mirando y se recuerda cual
+   fue el ultimo. */
+const _pTabs = Array.from(document.querySelectorAll(".pTab"));
+function showPanelTab(name, focusTab) {
+  if (!_pTabs.some(b => b.dataset.tab === name)) name = "letra";
+  _pTabs.forEach(b => {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+    if (on && focusTab) b.focus();
+  });
+  document.querySelectorAll(".pPane").forEach(p => p.classList.toggle("on", p.id === "pane-" + name));
+  try { localStorage.setItem("fv_tab", name); } catch (e) { /* storage bloqueado */ }
+}
+_pTabs.forEach(b => {
+  b.addEventListener("click", () => showPanelTab(b.dataset.tab));
+  b.addEventListener("keydown", e => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    e.preventDefault();
+    const i = _pTabs.indexOf(b);
+    const step = e.key === "ArrowRight" ? 1 : _pTabs.length - 1;
+    showPanelTab(_pTabs[(i + step) % _pTabs.length].dataset.tab, true);
+  });
+});
+showPanelTab(localStorage.getItem("fv_tab") || "letra");
+$("panelClose").onclick = () => togglePanel(false);
+
 $("gear").onclick = (e) => {
   e.stopPropagation();
   togglePanel();
 };
 // Tecla A o coma abre/cierra panel de ajustes
 addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    const p = $("panel");
+    if (p && p.style.display !== "none") { togglePanel(false); e.preventDefault(); }
+    return;
+  }
   if (e.target && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
   if ((e.key === "a" || e.key === "A" || e.key === ",") && !e.ctrlKey && !e.metaKey && !e.altKey) {
     togglePanel();
@@ -627,12 +871,12 @@ function bindRangeReload(id, key, valId, fmt, after) {
 function bindChk(id, key) {
   const el = $(id);
   el.checked = !!cfg[key];
-  el.onchange = e => { cfg[key] = e.target.checked; save(); applyCfg(); };
+  el.onchange = e => { cfg[key] = e.target.checked; save(); applyCfg(); if (lastShown) fitLyric(); };
 }
 function bindSel(id, key) {
   const el = $(id);
   el.value = cfg[key];
-  el.onchange = e => { cfg[key] = e.target.value; save(); applyCfg(); };
+  el.onchange = e => { cfg[key] = e.target.value; save(); applyCfg(); if (lastShown) fitLyric(); };
 }
 bindRange("fsRange", "fs", "fsVal");
 // TAMAÑO en vivo: repintar la letra actual al instante (sin esperar nueva frase)
@@ -649,7 +893,7 @@ bindRangeReload("phraseRng", "phrase", "phraseVal", v => v + " palabras", async 
     while (lineIdx + 1 < L0.length && L0[lineIdx + 1].t <= pos) lineIdx++;
     if (lineIdx >= 0 && lineIdx < L0.length) {
       lastShown = L0[lineIdx].text;
-      setLyric(lastShown, L0[lineIdx].back);
+      setLyric(lastShown, L0[lineIdx].back, undefined, L0[lineIdx].words || null);
     }
   }
 });
@@ -674,12 +918,12 @@ bindChk("flickChk", "flicker"); bindChk("tiltChk", "tilt"); bindChk("refChk", "r
 bindChk("scanChk", "scanOn"); bindChk("fishChk", "fish"); bindChk("tvChk", "tv");
 bindChk("moodChk", "autoMood");
 bindSel("moodSel", "moodOverride"); bindSel("transSel", "transition");
+bindSel("fluidStyleSel", "fluidStyle");
 bindSel("fontSel", "font"); bindSel("ctiming", "timing"); bindSel("cmode", "mode");
 bindSel("themeSel", "theme");
 bindChk("trailsChk", "trails"); bindChk("spectrumChk", "spectrum");
 bindChk("bounceChk", "beatBounce"); bindChk("dropChk", "dropFx");
 bindChk("smartChk", "smartContrast"); bindChk("qrChk", "qrEnabled");
-bindChk("transChk", "translate");
 bindChk("autoQChk", "autoQuality");
 
 /* ---------- TEMAS COMPLETOS: aplicar preset de golpe ---------- */
@@ -713,11 +957,20 @@ $("resetBtn").onclick = () => {
       principal (no solo al cargar): si tiene preset, se aplica AL INSTANTE;
       si no tiene y venimos de uno, vuelve la config habitual. */
 const PRESETS_KEY = "fv_presets";
+let _presetsCache = null;
 function loadPresets() {
-  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) || "{}"); }
-  catch (e) { return {}; }
+  if (_presetsCache) return _presetsCache;   // el tick lo consulta 4 veces/s: no reparsear localStorage
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PRESETS_KEY) || "{}");
+    _presetsCache = (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+  } catch (e) { _presetsCache = {}; }
+  return _presetsCache;
 }
-function savePresets(p) { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); updatePresetCount(); }
+function savePresets(p) {
+  _presetsCache = p;
+  try { localStorage.setItem(PRESETS_KEY, JSON.stringify(p)); } catch (e) { /* modo privado/cuota */ }
+  updatePresetCount();
+}
 function currentTrackKeys() {
   const t = S && S.track;
   if (!t) return {};
@@ -922,13 +1175,13 @@ function syncAllControls() {
    ["globalLockChk","globalLock"],["customPalChk","customPal"]].forEach(([id, key]) => {
     $(id).checked = !!cfg[key];
   });
-  [["moodSel","moodOverride"],["transSel","transition"],
+  [["moodSel","moodOverride"],["transSel","transition"],["fluidStyleSel","fluidStyle"],
    ["fontSel","font"],["ctiming","timing"],["cmode","mode"],["themeSel","theme"]].forEach(([id, key]) => {
     $(id).value = cfg[key];
   });
   [["trailsChk","trails"],["spectrumChk","spectrum"],["bounceChk","beatBounce"],
    ["dropChk","dropFx"],["smartChk","smartContrast"],["qrChk","qrEnabled"],
-   ["transChk","translate"],["autoQChk","autoQuality"]].forEach(([id, key]) => {
+   ["autoQChk","autoQuality"]].forEach(([id, key]) => {
     $(id).checked = !!cfg[key];
   });
 }
@@ -958,7 +1211,7 @@ function showToast(text) {
   if (!el) {
     el = document.createElement("div");
     el.id = "toast";
-    document.body.appendChild(el);
+    $("lensTarget").appendChild(el);
   }
   el.textContent = text;
   el.classList.add("on");
@@ -1010,8 +1263,9 @@ function applyCfg() {
   // si el usuario desactiva la calidad automática, usar siempre la máxima
   if (!cfg.autoQuality && _perf.level !== 3) setQuality(3);
   const r = document.documentElement.style;
-  r.setProperty("--fs", cfg.fs + "vw");
+  // el tamaño de letra lo calcula fitLyric() para la pantalla actual (no vw fijos)
   r.setProperty("--lyric-font", FONTS[cfg.font] || FONTS.arcade);
+  r.setProperty("--word-spacing", (Math.max(0, cfg.wordSpacing == null ? 1 : +cfg.wordSpacing) * 0.55).toFixed(3) + "em");
   r.setProperty("--scan-op", cfg.scanOn ? (cfg.scan / 100 * 0.45).toFixed(3) : "0");
   r.setProperty("--mask-op", (cfg.mask / 100 * 0.30).toFixed(3));
   r.setProperty("--vig-op", (cfg.vig / 100 * 0.80).toFixed(3));
@@ -1202,20 +1456,133 @@ document.addEventListener("keydown", e => {
   if (e.key === "Escape") $("qrOverlay").classList.remove("on");
 });
 
-/* ---------- 🌍 TRADUCCIÓN de letras extranjeras (línea secundaria) ----------
-   MyMemory API gratuita. Caché permanente por texto origen. */
-const _trCache = {};
-async function translateLine(text) {
-  if (!cfg.translate || !text) return "";
-  if (_trCache[text]) return _trCache[text];
-  try {
-    const r = await fetch("https://api.mymemory.translated.net/get?q="
-      + encodeURIComponent(text) + "&langpair=en|es", { cache: "no-store" });
-    const d = await r.json();
-    const tr = ((d.responseData || {}).translatedText || "").trim();
-    if (tr && !/MYMEMORY WARNING/i.test(tr)) _trCache[text] = tr;
-    return _trCache[text] || "";
-  } catch (e) { return ""; }
+/* ---------- Segunda pantalla: misma reproducción, letra principal traducida ---------- */
+const TRANSLATION_LANGS = {es:"Español", en:"Inglés", fr:"Francés", pt:"Portugués", it:"Italiano", de:"Alemán"};
+let translationPrefs = {from:"es", to:"en"};
+try {
+  const saved = JSON.parse(localStorage.getItem("fv_translation") || "{}");
+  for (const key of ["from", "to"]) if (Object.hasOwn(TRANSLATION_LANGS, saved[key])) translationPrefs[key] = saved[key];
+} catch (e) {}
+if (TRANSLATION_DISPLAY) {
+  const params = new URLSearchParams(location.search);
+  for (const key of ["from", "to"]) if (Object.hasOwn(TRANSLATION_LANGS, params.get(key))) translationPrefs[key] = params.get(key);
+  document.title = "FIESTA — Traducción · " + TRANSLATION_LANGS[translationPrefs.to];
+  $("translationSetup").hidden = true;
+  $("dualScreenBtn").textContent = "⛶ Pantalla completa";
+  $("source").textContent = "TRADUCCIÓN · " + TRANSLATION_LANGS[translationPrefs.from] + " → " + TRANSLATION_LANGS[translationPrefs.to];
+  $("translationStatus").textContent = "Mueve esta ventana a la otra pantalla y activa pantalla completa.";
+}
+for (const [id, key] of [["translationFrom", "from"], ["translationTo", "to"]]) {
+  const select = $(id);
+  for (const [code, label] of Object.entries(TRANSLATION_LANGS)) select.add(new Option(label, code));
+  select.value = translationPrefs[key];
+  select.onchange = () => {
+    translationPrefs[key] = select.value;
+    try { localStorage.setItem("fv_translation", JSON.stringify(translationPrefs)); } catch (e) {}
+    $("translationStatus").textContent = "Pulsa abrir para aplicar los idiomas en la segunda pantalla.";
+  };
+}
+let translationWindow = null, translationWindowUrl = "";
+$("dualScreenBtn").onclick = () => {
+  if (TRANSLATION_DISPLAY) {
+    if (!document.documentElement.requestFullscreen) {
+      $("translationStatus").textContent = "Usa F11 para poner esta ventana a pantalla completa.";
+      return;
+    }
+    document.documentElement.requestFullscreen().then(() => togglePanel(false)).catch(() => {
+      $("translationStatus").textContent = "No se pudo activar pantalla completa. Prueba con F11.";
+    });
+    return;
+  }
+  if (translationPrefs.from === translationPrefs.to) {
+    $("translationStatus").textContent = "Elige dos idiomas diferentes.";
+    return;
+  }
+  const url = new URL(location.href);
+  url.searchParams.set("display", "translation");
+  url.searchParams.set("from", translationPrefs.from);
+  url.searchParams.set("to", translationPrefs.to);
+  if (translationWindow && !translationWindow.closed && translationWindowUrl === url.href) {
+    translationWindow.focus();
+  } else {
+    translationWindow = window.open(url.href, "fiesta-translation", "popup=yes,width=1200,height=800,resizable=yes,scrollbars=yes");
+    translationWindowUrl = url.href;
+  }
+  $("translationStatus").textContent = translationWindow
+    ? "Segunda ventana abierta. Muévela a tu otra pantalla; puedes cerrar esta configuración."
+    : "El navegador bloqueó la ventana. Permite ventanas emergentes para FIESTA y vuelve a pulsar.";
+};
+
+// Cache and two workers: prepare nearby phrases without translating the whole
+// catalogue or sending duplicate requests for repeated lyrics. Only this window translates.
+const _trCache = new Map(), _trQueue = [];
+let _trActive = 0, _trPrefetchKey = "";
+function translateLine(text, urgent = false) {
+  if (!TRANSLATION_DISPLAY || !text) return Promise.resolve("");
+  if (translationPrefs.from === translationPrefs.to || !/\p{L}/u.test(text)) return Promise.resolve(text);
+  const key = translationPrefs.from + "|" + translationPrefs.to + "|" + text;
+  const cached = _trCache.get(key);
+  if (cached && (!cached.retryAt || Date.now() < cached.retryAt)) {
+    if (urgent) {
+      const i = _trQueue.findIndex(job => job.key === key);
+      if (i > 0) _trQueue.unshift(_trQueue.splice(i, 1)[0]);
+    }
+    return cached.promise;
+  }
+  if (_trCache.size >= 400) {
+    for (const [k, entry] of _trCache) if (entry.done) { _trCache.delete(k); break; }
+  }
+  let resolve;
+  const entry = {promise: new Promise(r => { resolve = r; }), done:false};
+  _trCache.set(key, entry);
+  const job = {key, text, entry, resolve, track:curTrack};
+  if (urgent) _trQueue.unshift(job); else _trQueue.push(job);
+  drainTranslations();
+  return entry.promise;
+}
+function drainTranslations() {
+  while (_trActive < 2 && _trQueue.length) {
+    const job = _trQueue.shift();
+    if (job.track !== curTrack) { _trCache.delete(job.key); job.resolve(""); continue; }
+    _trActive++;
+    (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      let result = "";
+      try {
+        const url = new URL("https://api.mymemory.translated.net/get");
+        url.searchParams.set("q", job.text);
+        url.searchParams.set("langpair", translationPrefs.from + "|" + translationPrefs.to);
+        const response = await fetch(url, {signal:controller.signal});
+        if (!response.ok) throw new Error("translation unavailable");
+        const data = await response.json();
+        if (+data.responseStatus !== 200 || data.quotaFinished) throw new Error("translation unavailable");
+        const translated = String(data.responseData?.translatedText || "").trim();
+        if (/MYMEMORY WARNING|QUERY LENGTH LIMIT EXCEEDED/i.test(translated)) throw new Error("translation unavailable");
+        const decoder = document.createElement("textarea");
+        decoder.innerHTML = translated;
+        result = decoder.value;
+      } catch (e) {
+        job.entry.retryAt = Date.now() + 60000;
+      } finally {
+        clearTimeout(timeout);
+        job.entry.done = true;
+        job.entry.value = result;
+        job.resolve(result);
+        _trActive--;
+        drainTranslations();
+      }
+    })();
+  }
+}
+function prefetchTranslations() {
+  if (!TRANSLATION_DISPLAY || !S?.track) return;
+  const key = curTrack + "|" + lineIdx + "|" + (S.lyrics || []).length;
+  if (_trPrefetchKey === key) return;
+  _trPrefetchKey = key;
+  for (const line of (S.lyrics || []).slice(Math.max(0, lineIdx), Math.max(0, lineIdx) + 5)) {
+    void translateLine(line.text);
+  }
 }
 
 /* ---------- CONTRASTE POR ZONAS: medir la franja real donde va la letra ---------- */
@@ -1335,9 +1702,10 @@ let _lensMapDataURI = null;   // cache del data URI para no re-encodear cada fra
 
 function buildLens() {
   const sc = document.getElementById("screen").getBoundingClientRect();
-  const amp = Math.round(Math.min(sc.width, sc.height) * ((cfg.lensStrength == null ? 18 : +cfg.lensStrength) / 100));
-  const key = Math.round(sc.width) + "x" + Math.round(sc.height);
-  if (_lensBuiltFor === key && _lensBuiltAmp === amp && document.getElementById("lensMap")) return;
+  const strength = Math.max(0, Math.min(100, +((cfg.lensStrength == null ? 18 : cfg.lensStrength))));
+  const amp = Math.max(1, Math.round(Math.min(sc.width, sc.height) * (strength / 100)));
+  const key = Math.round(sc.width) + "x" + Math.round(sc.height) + "@" + strength;
+  if (_lensBuiltFor === key && document.getElementById("lensMap")) return;
   _lensBuiltFor = key;
   _lensBuiltAmp = amp;
   const NS = "http://www.w3.org/2000/svg";
@@ -1357,25 +1725,37 @@ function buildLens() {
     `<feImage id="lensMap" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="map"/>` +
     // feGaussianBlur suaviza el mapa → muestreo más estable cuando el navegador
     // interpola. Coste despreciable (se hace 1 vez al construir).
-    `<feGaussianBlur in="map" stdDeviation="6" result="mapBlur"/>` +
+    `<feGaussianBlur in="map" stdDeviation="2" result="mapBlur"/>` +
     `<feDisplacementMap in="SourceGraphic" in2="mapBlur" scale="${amp}" ` +
     `xChannelSelector="R" yChannelSelector="G"/>` +
     `</filter>`;
-  // Construir mapa de barril 96x96 (256x256 era overkill)
-  const MW = 96, MH = 96;
+  // Mapa de barril/fisheye en coordenadas de pantalla. La fórmula inversa
+  // (r' = r * (1 - k*(1 - t²))) amplía el centro y deja el borde quieto, así
+  // que el filtro siempre muestrea DENTRO del origen y no aparecen bordes
+  // negros/transparentes. Al calcular px/py en píxeles reales, la lente es
+  // circular también en pantallas no cuadradas (el mapa anterior era elíptico).
+  // Referencia de la deformación polar: Prideout/Geeks3D barrel distortion.
+  const MW = 160, MH = 160;
   const cv = document.createElement("canvas"); cv.width = MW; cv.height = MH;
   const g = cv.getContext("2d");
   const img = g.createImageData(MW, MH);
   const d = img.data;
+  const cx = w / 2, cy = h / 2;
+  const R = Math.hypot(cx, cy) || 1;
+  const k = Math.min(0.8, strength / 100 * 1.5);
+  const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
   for (let y = 0; y < MH; y++) {
-    const vy = (y - MH / 2) / (MH / 2);
+    const py = (((y + 0.5) / MH) * 2 - 1) * cy;
     for (let x = 0; x < MW; x++) {
-      const vx = (x - MW / 2) / (MW / 2);
-      const rn = Math.min(1, Math.sqrt(vx * vx + vy * vy));
-      const m = rn * rn;
+      const px = (((x + 0.5) / MW) * 2 - 1) * cx;
+      const r = Math.hypot(px, py);
+      const t = r > 0 ? Math.min(1, r / R) : 1;
+      const factor = r > 0.0001 ? 1 - k * (1 - t * t) : 1;
+      const dx = px * (factor - 1);
+      const dy = py * (factor - 1);
       const o2 = (y * MW + x) * 4;
-      d[o2]     = Math.max(0, Math.min(255, Math.round(128 + vx * m * 127)));
-      d[o2 + 1] = Math.max(0, Math.min(255, Math.round(128 + vy * m * 127)));
+      d[o2]     = clamp(128 + dx / amp * 127);
+      d[o2 + 1] = clamp(128 + dy / amp * 127);
       d[o2 + 2] = 128;
       d[o2 + 3] = 255;
     }
@@ -1391,11 +1771,17 @@ function applyLens() {
   const t = document.getElementById("lensTarget");
   if (!t) return;
   const amp = +((cfg.lensStrength == null ? 18 : cfg.lensStrength));
+  const scr = document.getElementById("screen");
+  const sr = scr ? scr.getBoundingClientRect() : null;
+  const size = sr ? Math.round(sr.width) + "x" + Math.round(sr.height) : "0x0";
   // la lente por píxel es el efecto más caro: se apaga en calidad mínima
   const shouldLens = cfg.fish && !eggActive && _perf.level >= 1 && amp > 0;
-  const key = shouldLens + "|" + amp;
+  const key = shouldLens + "|" + amp + "|" + size;
   if (key === applyLens._key) return;     // no reescribir el filtro en cada línea
   applyLens._key = key;
+  // Compensa el desplazamiento de la UI hacia el bisel con lentes fuertes.
+  t.style.setProperty("--lens-safe", shouldLens && sr
+    ? (Math.min(sr.width, sr.height) * amp / 100 * 0.3) + "px" : "0px");
   if (shouldLens) {
     buildLens();
     t.style.filter = "url(#lens)";
@@ -1412,81 +1798,305 @@ function applyLens() {
    el efecto "aAAa" que rompía la legibilidad. Ahora la deformación la hace
    exclusivamente el feDisplacementMap (filtro por píxel) sobre #lensTarget,
    y el texto va SIEMPRE plano. Esta función solo respeta wordSpacing. */
+function spaceSpan() {
+  // Espacio de texto normal: si la frase parte en varias líneas, el navegador
+  // lo colapsa en el salto y no desplaza el resto de la línea. El espacio extra
+  // del slider lo aporta --word-spacing.
+  return document.createTextNode(" ");
+}
 function applyFisheye(el, text) {
   el.textContent = "";
   text.split(/(\s+)/).forEach(part => {
-    if (/^\s+$/.test(part)) {
-      const sp = document.createElement("span");
-      sp.textContent = "\u00A0\u00A0";
-      const ws = (cfg.wordSpacing == null ? 1 : +cfg.wordSpacing);
-      sp.style.cssText = `display:inline-block;margin-left:${(0.1*ws).toFixed(3)}em;margin-right:${(0.1*ws).toFixed(3)}em;width:${(0.6*ws).toFixed(3)}em`;
-      el.appendChild(sp);
-    } else if (part) {
-      el.appendChild(document.createTextNode(part));
-    }
+    if (/^\s+$/.test(part)) el.appendChild(spaceSpan());
+    else if (part) el.appendChild(document.createTextNode(part));
   });
 }
 
 
+/* ---------- DISPOSICIÓN POR DISPOSITIVO + TAMAÑO DE LETRA ADAPTATIVO ----------
+   El tamaño fijo en vw no servía: en un móvil 7vw son ~27 px (letra diminuta)
+   y en una TV 134 px, y las frases largas se salían del hueco del mueble.
+   Ahora cada pantalla mide su hueco real (el del mueble de TV si cabe, o la
+   pantalla entera en móvil/tablet) y se elige el mayor tamaño de letra con el
+   que la frase completa cabe: máximo 4 palabras grandes, sin recortes. */
+function applyDeviceLayout() {
+  const vw = Math.max(1, window.innerWidth);
+  const vh = Math.max(1, window.innerHeight);
+  const ar = vw / vh;
+  // el PNG del mueble mide 1.5188 de ancho/alto: por debajo de ~1.45 se recorta
+  // Hay que usar el ratio REAL: con 1.45–1.518 el mueble ya no cabe entero y
+  // recorta la pantalla/UI; en ese rango pasamos a pantalla completa.
+  const compact = ar < 1.52 || Math.min(vw, vh) < 640;
+  document.body.classList.toggle("compact", compact);
+  document.body.classList.toggle("vertical", ar < 0.9);
+}
+function lyricBox() {
+  const el = $("lyrics");
+  if (!el) return null;
+  const cs = getComputedStyle(el);
+  if (cs.display === "none" || !el.clientHeight) return null;
+  const w = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const h = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  return (w > 24 && h > 24) ? { w, h } : null;
+}
+let _fitProbeMain = null, _fitProbeBack = null, _fitProbeWord = null;
+const _fitCache = new Map();   // clave texto/caja/fuente → px ya calculado
+function fitProbe(which) {
+  let el = which === "back" ? _fitProbeBack : which === "word" ? _fitProbeWord : _fitProbeMain;
+  if (!el) {
+    el = document.createElement("div");
+    el.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;" +
+      "margin:0;padding:0;max-width:none;z-index:-1;text-align:center;" +
+      "word-break:keep-all;hyphens:none;white-space:normal;text-wrap:balance;" +
+      "word-spacing:var(--word-spacing,.55em)";
+    document.body.appendChild(el);
+    if (which === "back") _fitProbeBack = el;
+    else if (which === "word") _fitProbeWord = el;
+    else _fitProbeMain = el;
+  }
+  return el;
+}
+/* Elige el tamaño de letra (px) para la frase actual. sizeVw = preferencia
+   relativa (el título usa 5, la letra el slider «Tamaño», 7 = natural). */
+function fitLyric(sizeVw) {
+  const cur = $("lCur"), backEl = $("lBack");
+  applyDeviceLayout();          // por si la ventana cambió sin disparar "resize"
+  const box = lyricBox();
+  if (!cur || !box || !cur.textContent.trim()) return;
+  const compact = document.body.classList.contains("compact");
+  // el tope de renglones es una palabra por línea (máx. 4): así el tamaño se
+  // maximiza sin partir palabras y sin salirse nunca de la pantalla.
+  // OJO: el karaoke pinta dos capas (base + relleno); para medir usamos el texto
+  // lógico guardado en data-text, no el textContent duplicado.
+  const logical = cur.dataset.text || cur.textContent;
+  const words = (logical.trim().match(/\S+/g) || []).length;
+  const isTitle = cur.classList.contains("title");
+  const maxLines = isTitle ? 2 : Math.min(4, Math.max(1, words));
+  const pref = Math.max(0.35, Math.min(2.2, (sizeVw || +cfg.fs || 7) / 7));
+  const cap = Math.max(14, Math.min(box.h * (compact ? 0.42 : 0.50),
+                                    box.w * (compact ? 0.55 : 0.42)) * pref);
+  const backText = (backEl && backEl.style.display !== "none") ? backEl.textContent.trim() : "";
+  const cs = getComputedStyle(cur);
+  const maxW = isTitle ? box.w * 0.90 : box.w;   // margen lateral para el título
+  // Repetir ESTA frase (coro, resize, mismo tick) no debe volver a hacer 16
+  // layouts binarios: si texto/caja/fuente no cambiaron, reutilizar el px.
+  const fitKey = [logical, backText, Math.round(box.w), Math.round(box.h),
+                  isTitle ? 1 : 0, eggActive ? 1 : 0, compact ? 1 : 0,
+                  Math.round((sizeVw || +cfg.fs || 7) * 100), cfg.font,
+                  cfg.wordSpacing, cfg.upper ? 1 : 0,
+                  cs.fontFamily, cs.fontWeight, cs.fontStyle, cs.letterSpacing].join("|");
+  const cachedPx = _fitCache.get(fitKey);
+  if (cachedPx) {
+    cur.style.fontSize = cachedPx + "px";
+    document.documentElement.style.setProperty("--fs", cachedPx + "px");
+    return;
+  }
+  const main = fitProbe("main"), back = fitProbe("back");
+  [main, back].forEach(p => {
+    p.style.fontFamily = cs.fontFamily;
+    p.style.fontWeight = cs.fontWeight;
+    p.style.fontStyle = cs.fontStyle;
+    p.style.letterSpacing = cs.letterSpacing;
+    p.style.textTransform = cs.textTransform;
+    // medir con el MISMO espaciado que usa la línea (el título va sin extra)
+    p.style.wordSpacing = isTitle ? "normal" : "var(--word-spacing,.55em)";
+    p.style.width = (p === main && isTitle ? maxW : box.w) + "px";
+  });
+  main.style.lineHeight = "1.45";
+  back.style.lineHeight = "1.2";
+  main.innerHTML = cur.innerHTML;
+  // la palabra más larga no puede ser más ancha que la pantalla (no se parte)
+  const longest = (logical.trim().match(/\S+/g) || [""]).reduce((a, b) => b.length > a.length ? b : a, "");
+  const word = fitProbe("word");
+  word.style.fontFamily = cs.fontFamily;
+  word.style.fontWeight = cs.fontWeight;
+  word.style.fontStyle = cs.fontStyle;
+  word.style.letterSpacing = cs.letterSpacing;
+  word.style.textTransform = cs.textTransform;
+  word.style.whiteSpace = "nowrap";
+  word.style.lineHeight = "1.45";
+  word.textContent = longest;
+  function fits(px) {
+    main.style.fontSize = px + "px";
+    const h = main.getBoundingClientRect().height;
+    word.style.fontSize = px + "px";
+    if (word.getBoundingClientRect().width > maxW + 1) return false;
+    if (h / (px * 1.45) > maxLines + 0.25) return false;    // demasiados renglones
+    let bh = 0;
+    if (backText) {
+      back.innerHTML = backEl.innerHTML;
+      back.style.fontSize = (px * 0.5) + "px";
+      bh = back.getBoundingClientRect().height;
+    }
+    return h + bh + px * 0.25 <= box.h;
+  }
+  let px = 12;
+  if (fits(px)) {
+    let lo = px, hi = cap;
+    if (fits(hi)) lo = hi;
+    else for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2;
+      if (fits(mid)) lo = mid; else hi = mid;
+    }
+    px = lo;
+  }
+  px = Math.max(10, Math.floor(px * 10) / 10);
+  cur.style.fontSize = px + "px";
+  document.documentElement.style.setProperty("--fs", px + "px");
+  _fitCache.set(fitKey, px);
+  if (_fitCache.size > 96) _fitCache.clear();
+}
+let _fitResizeT = null;
+function onViewportChange() {
+  _fitCache.clear();
+  applyDeviceLayout();
+  applyLens();
+  clearTimeout(_fitResizeT);
+  _fitResizeT = setTimeout(() => { if (lastShown) fitLyric(); }, 120);
+}
+addEventListener("resize", onViewportChange);
+addEventListener("orientationchange", () => setTimeout(onViewportChange, 250));
+if (window.visualViewport) window.visualViewport.addEventListener("resize", onViewportChange);
+// La fuente arcade se carga después del primer pintado (font-display:swap):
+// al llegar, se vuelve a medir para que el tamaño sea el real y no el del fallback.
+if (document.fonts) {
+  document.fonts.ready.then(() => { _fitCache.clear(); if (lastShown) fitLyric(); });
+  document.fonts.addEventListener("loadingdone", () => { _fitCache.clear(); if (lastShown) fitLyric(); });
+}
+
 /* ---------- control manual: distancia entre palabras ---------- */
 
-function setLyric(text, back, sizeVw) {
-  const fs = sizeVw || cfg.fs;      // el título usa 5vw fijos, la letra el slider
-  $("lCur").style.whiteSpace = "pre-wrap";   // conservar espacios entre spans
-  $("lCur").style.lineHeight = "";
+/* ---------- KARAOKE por sílaba/palabra (Spicy Lyrics) ----------
+   `words` = [{text, t, end, part}] en segundos. `part` une sílabas de la misma
+   palabra sin espacio. Cada token lleva dos capas: base tenue y relleno que se
+   recorta con --p (0..1) al ritmo real de la canción. */
+let karaokeTokens = null, karaokeText = null, karaokeWords = null, karaokeSp = null;
+function buildKaraoke(el, words) {
+  el.textContent = "";
+  const frag = document.createDocumentFragment();
+  const tokens = [];
+  words.forEach((w, i) => {
+    if (!w || !w.text) return;
+    if (i > 0 && !w.part) frag.appendChild(spaceSpan());
+    const box = document.createElement("span");
+    box.className = "w";
+    const base = document.createElement("span");
+    base.className = "wb"; base.textContent = w.text;
+    const fill = document.createElement("span");
+    fill.className = "wf"; fill.textContent = w.text;
+    box.appendChild(base); box.appendChild(fill);
+    frag.appendChild(box);
+    const t0 = +w.t || 0;
+    const t1 = +w.end > t0 ? +w.end : t0 + 0.01;
+    tokens.push({ el: box, t: t0, end: t1, p: -1, sung: false });
+  });
+  el.appendChild(frag);
+  return tokens;
+}
+function updateKaraoke(t) {
+  if (!karaokeTokens) return;
+  for (let i = 0; i < karaokeTokens.length; i++) {
+    const w = karaokeTokens[i];
+    const p = t <= w.t ? 0 : t >= w.end ? 1 : (t - w.t) / (w.end - w.t);
+    if (Math.abs(p - w.p) < 0.004) continue;
+    w.p = p;
+    w.el.style.setProperty("--p", p.toFixed(3));
+    const sung = p >= 1;
+    if (sung !== w.sung) { w.sung = sung; w.el.classList.toggle("sung", sung); }
+  }
+}
+
+function setLyric(text, back, sizeVw, words) {
+  // All call sites (including font/spacing controls) pass source text here.
+  // Never apply source word timings to translated words: alignment is per phrase.
+  const gen = (setLyric._gen = (setLyric._gen || 0) + 1);
+  if (!TRANSLATION_DISPLAY || sizeVw === 5 || !/\p{L}/u.test(text || "")) {
+    paintLyric(text, TRANSLATION_DISPLAY && sizeVw !== 5 ? null : back, sizeVw, words);
+    return;
+  }
+  const track = curTrack;
+  paintLyric("Traduciendo…", null, sizeVw, null);
+  translateLine(text, true).then(translated => {
+    if (gen !== setLyric._gen || track !== curTrack || lyricsFrozen) return;
+    paintLyric(translated || "Traducción no disponible", null, sizeVw, null);
+    $("translationStatus").textContent = translated
+      ? "Traducción sincronizada por frase · " + TRANSLATION_LANGS[translationPrefs.to]
+      : "No se pudo traducir esta frase. Comprueba la conexión o la cuota del servicio de traducción.";
+  });
+}
+
+function paintLyric(text, back, sizeVw, words) {
+  /* el tamaño de letra lo calcula fitLyric() según la pantalla */
+  const curEl = $("lCur");
+  curEl.dataset.text = text;   // texto lógico (fitLyric no debe medir las 2 capas)
+  curEl.classList.toggle("title", sizeVw === 5);   // el título se limita a 2 líneas
+  curEl.style.whiteSpace = "";   // hereda normal: los espacios reales pueden cortar
+  curEl.style.lineHeight = "";
   // Repintar el tamaño en vivo: aplicamos fs por CSS var (no inline) y forzamos
   // el font-size inline para sobrescribir cualquier valor residual anterior.
-  $("lCur").style.fontSize = "";
+  curEl.style.fontSize = "";
   $("lBack").style.fontSize = "";   // subtítulo vuelve a heredar calc(var(--fs)*.5)
-  document.documentElement.style.setProperty("--fs", fs + "vw");
-  $("lCur").style.fontSize = "calc(" + fs + "vw)";
-  if (!eggActive) { $("lCur").style.color = "" }   // restaurar contraste dinámico
+  if (!eggActive) { curEl.style.color = "" }   // restaurar contraste dinámico
   // la deformación del ojo de pez la hace el filtro por píxel (lente SVG).
   // El texto va SIEMPRE plano, garantizado.
   applyLens();
-  $("lCur").style.textAlign = "center";
+  curEl.style.textAlign = "center";
   $("lBack").style.textAlign = "center";
-  applyFisheye($("lCur"), text);
-  // SUBTÍTULO: backs/paréntesis o TRADUCCIÓN como línea secundaria opaca
+  if (words && words.length) {
+    karaokeText = text;
+    karaokeWords = words;
+    karaokeSp = cfg.wordSpacing;
+    karaokeTokens = buildKaraoke(curEl, words);
+  } else if (words === undefined && text === karaokeText && karaokeWords &&
+             karaokeSp !== cfg.wordSpacing) {
+    /* cambió el espacio entre palabras: reconstruir con los mismos tiempos */
+    karaokeSp = cfg.wordSpacing;
+    karaokeTokens = buildKaraoke(curEl, karaokeWords);
+  } else if (words === undefined && text === karaokeText && karaokeTokens) {
+    /* mismo texto (p. ej. al mover un slider): conservar tokens y progreso */
+  } else {
+    karaokeText = null;
+    karaokeWords = null;
+    karaokeSp = null;
+    karaokeTokens = null;
+    applyFisheye(curEl, text);
+  }
+  // Secondary line is reserved for original backing vocals, never translation.
   const backEl = $("lBack");
   if (back) {
     applyFisheye(backEl, back);
     backEl.style.display = "block";
-  } else if (cfg.translate && /[a-z]{3,}/i.test(text)) {
-    // sin back: intentar traducción (async; cuando llegue, mostrar si es útil)
-    backEl.textContent = "…";
-    backEl.style.display = "block";
-    translateLine(text).then(tr => {
-      if (tr && tr.toLowerCase() !== (text || "").toLowerCase()) {
-        applyFisheye(backEl, tr);
-        backEl.style.display = "block";
-      } else {
-        backEl.textContent = "";
-        backEl.style.display = "none";
-      }
-    });
   } else {
     backEl.textContent = "";
     backEl.style.display = "none";
   }
+  /* Ajustar el tamaño en el MISMO frame, ya con texto y subtítulo puestos.
+     Si se aplaza al siguiente frame, la frase nueva se pinta un instante con
+     el tamaño de la anterior (el micro-flicker al cambiar de palabra).
+     El timeout queda solo para cuando #lyrics aún está oculto (cambio de pista). */
+  if (lyricBox()) fitLyric(sizeVw);
+  else setTimeout(() => fitLyric(sizeVw), 0);
 }
 
 /* Pinta una línea + easter egg en un único sitio (antes había 3 copias). */
-function showLine(text, back, sizeVw) {
+function showLine(text, back, sizeVw, words) {
   lastShown = text;
   const wasEgg = eggActive;
-  const nowEgg = isEggLine(text);
+  const nowEgg = !TRANSLATION_DISPLAY && isEggLine(text);
   eggActive = nowEgg;
   if (nowEgg && !wasEgg) enterEgg();
   else if (!nowEgg && wasEgg) exitEgg();
   applyEggFont();
-  setLyric(text, back, sizeVw);
+  // EOO reescribe el contenido (E → EOOO…): ahí no puede haber tokens.
+  setLyric(text, back, sizeVw, (nowEgg && isEooText(text)) ? null : words);
   stopGrowingE();
   if (nowEgg && isEooText(text)) startGrowingE();
 }
 
 /* ---------- selector rápido 🎉 / 🌊 ---------- */
 function updateMoodSwitch() {
+  $("moodParty").setAttribute("aria-pressed", String(cfg.moodOverride === "party"));
+  $("moodChill").setAttribute("aria-pressed", String(cfg.moodOverride === "chill"));
   $("moodParty").classList.toggle("active", cfg.moodOverride === "party");
   $("moodChill").classList.toggle("active", cfg.moodOverride === "chill");
   // en auto: iluminar suave ambos (el sistema decide por canción)
@@ -1503,22 +2113,25 @@ $("moodParty").onclick = () => { cfg.moodOverride = "party"; save(); applyCfg();
 $("moodChill").onclick = () => { cfg.moodOverride = "chill"; save(); applyCfg(); };
 
 /* ---------- estado (sync agresivo: 4 polls/s + extrapolación local) ---------- */
-let _tickBusy = false;
+let _tickBusy = false, _tickTimer = null, _tickDelay = 250;
+function scheduleTick(delay) {
+  clearTimeout(_tickTimer);
+  _tickTimer = null;
+  if (document.visibilityState === "hidden") return;   // no despertar a un servidor en background
+  _tickTimer = setTimeout(tick, delay);
+}
 async function tick() {
   if (_tickBusy) return;   // el tick en curso ya reprograma el siguiente
+  if (document.visibilityState === "hidden") return;
   _tickBusy = true;
+  let ok = false;
   try {
+    const sent = performance.now();
     const r = await fetch("/api/sync", { cache: "no-store" });
     if (!r.ok) throw 0;
     const sync = await r.json();
     setSyncLed(sync.health === "synced" ? "synced" : "waiting");
-    let serverPos = (sync.progress_ms || 0) / 1000;
-    if (sync.is_playing && sync.ts) {
-      // sync.ts viene de Python time.time() (epoch Unix); performance.now()
-      // empieza en 0 por pestaña y NO se puede comparar. Date.now() sí comparte epoch.
-      const age = Math.max(0, Date.now() - (sync.ts * 1000));
-      serverPos += age / 1000;
-    }
+    const serverPos = playbackSample(sync, sent, performance.now());
     const serverPlaying = !!sync.is_playing;
     const sameTrack = S && S.track && S.track.id && sync.track_id && S.track.id === sync.track_id;
     // BUG presets: si el track cambió, avisar ya (checkPresets se llama tras recargar)
@@ -1530,23 +2143,13 @@ async function tick() {
     if (sync.lyric && S && S.lyrics) { S.lyric = sync.lyric; }
     if (!sync.track_id && (!S || !S.track)) {
       // nada sonando: no recargar /api/state 4 veces por segundo
-      playing = false; speed = 0; pos = serverPos; posAt = performance.now();
+      setPlaybackClock(serverPos, false, true);
     } else if (S && S.track && sameTrack && samePlaying) {
-      // misma canción, mismo estado → corrección agresiva del drift
-      const drift = serverPos - pos;
-      if (Math.abs(drift) > 30) pos = serverPos;
-      else if (Math.abs(drift) > 0.5) pos = serverPos;
-      else pos += drift * 0.5;
-      playing = serverPlaying;
-      speed = serverPlaying ? 1 : 0;
-      posAt = performance.now();
+      setPlaybackClock(serverPos, serverPlaying);
       checkPresets();   // evaluar SIEMPRE (barato: findPreset es un lookup)
     } else if (S && S.track && sameTrack && !samePlaying) {
       // misma canción pero cambió pausa → solo actualizar estado, no recargar
-      playing = serverPlaying;
-      speed = serverPlaying ? 1 : 0;
-      pos = serverPos;
-      posAt = performance.now();
+      setPlaybackClock(serverPos, serverPlaying, true);
     } else {
       // cambió canción o primer load → recargar estado completo
       // Transición INMEDIATA al detectar el corte: tapa el tiempo de carga
@@ -1555,43 +2158,38 @@ async function tick() {
         playTransitionFor(sync.track_id);
         // congelar la letra vieja bajo la transición: limpiar punteros ya
         lineIdx = -1; beatPtr = 0; barPtr = 0; secPtr = 0; lastShown = null;
+        lyricsFrozen = true;
       }
+      const stateSent = performance.now();
       const r2 = await fetch("/api/state?mw=" + cfg.phrase, { cache: "no-store" });
       S = await r2.json();
-      playing = !!S.is_playing;
-      speed = playing ? 1 : 0;
-      pos = serverPos;
-      posAt = performance.now();
-      // inicializar punteros de ritmo según la posición actual
-      const B = S.beats||[], BR = S.bars||[], SE = S.sections||[];
-      while(beatPtr < B.length && B[beatPtr] <= pos) beatPtr++;
-      while(barPtr  < BR.length && BR[barPtr]  <= pos) barPtr++;
-      while(secPtr  < SE.length && SE[secPtr]  <= pos) secPtr++;
+      const statePos = playbackSample(S, stateSent, performance.now());
       renderState();
+      setPlaybackClock(statePos, !!S.is_playing, true);
       checkPresets();   // presets por canción/artista/álbum en CADA carga de track
-      onColor();
     }
+    ok = true;
   } catch (e) {
     setSyncLed("offline");
+    _tickDelay = Math.min(4000, Math.max(500, _tickDelay * 2));   // 250ms → 4s si el server falla
     try {
+      const stateSent = performance.now();
       const r = await fetch("/api/state?mw=" + cfg.phrase, { cache: "no-store" });
       S = await r.json();
       if (S && S.track) {
-        const serverPos = (S.progress_ms || 0) / 1000;
-        playing = !!S.is_playing;
-        speed = playing ? 1 : 0;
-        const drift = serverPos - pos;
-        if (Math.abs(drift) > 0.5) pos = serverPos;
-        else pos += drift * 0.5;
-        posAt = performance.now();
+        const statePos = playbackSample(S, stateSent, performance.now());
+        const changed = curTrack !== S.track.id;
         renderState();
+        setPlaybackClock(statePos, !!S.is_playing, changed);
       } else {
         showMsg("CONECTANDO…");
       }
     } catch (e2) { /* servidor apagado */ }
   } finally {
     _tickBusy = false;
-    setTimeout(tick, 250);   // un único programador: el tick en curso
+    lyricsFrozen = false;   // si el fetch falla, no dejar la letra congelada para siempre
+    if (ok) _tickDelay = 250;
+    scheduleTick(_tickDelay);   // un único programador, pausado en background y con backoff
   }
 }
 
@@ -1606,9 +2204,17 @@ function showMsg(t) {
   $("msg").textContent = t; $("msg").style.display = "flex";
   $("lyrics").style.display = "none"; $("lineNone").style.display = "none";
 }
-function hideMsg() { $("msg").style.display = "none"; $("lyrics").style.display = "flex"; }
+function hideMsg() {
+  $("msg").style.display = "none";
+  // Si no hay letra, NO mostrar #lyrics vacío: dejar el cartel NO LYRICS.
+  // Si hay fallback (S.lyric) tampoco debe quedar el cartel encima.
+  const has = S && ((S.lyrics && S.lyrics.length) || (S.lyric && S.lyric.text !== undefined));
+  $("lineNone").style.display = has ? "none" : "flex";
+  $("lyrics").style.display = has ? "flex" : "none";
+}
 
 function renderState() {
+  lyricsFrozen = false;
   if (!S) { showMsg("CONECTANDO…"); return; }
   $("loginBtn").textContent = S.logged_in ? "✓ CONECTADO (RECONECTAR)" : "CONECTAR CON SPOTIFY";
   $("logoutBtn").style.display = S.logged_in ? "block" : "none";
@@ -1634,18 +2240,25 @@ function renderState() {
       while(secPtr  < SE.length && SE[secPtr]  <= pos) secPtr++; }
     // Forzar sync lock del primer downbeat/línea bajo la nueva posición
     // (asignando lineIdx a la última línea cuyo t <= pos)
+    // #lyrics debe ser medible ANTES de showLine: si estaba oculto (pista anterior
+    // sin letra), fitLyric no puede calcular el tamaño y se vería un frame grande.
     const L0 = S.lyrics || [];
+    $("lineNone").style.display = L0.length ? "none" : "flex";
+    $("lyrics").style.display = L0.length ? "flex" : "none";
     while (lineIdx + 1 < L0.length && L0[lineIdx + 1].t <= pos) lineIdx++;
     if (lineIdx >= 0 && lineIdx < L0.length) {
-      showLine(L0[lineIdx].text, L0[lineIdx].back);
+      showLine(L0[lineIdx].text, L0[lineIdx].back, undefined, L0[lineIdx].words || null);
     } else {
       setLyric("...", null);
     }
     applyEggFont();
     // (el nombre de la canción va abajo, en #song, NO sobreescribimos lCur)
-    $("lyrics").classList.add("song-flash");
+    const lyFlash = $("lyrics");
+    lyFlash.classList.remove("song-flash");
+    void lyFlash.offsetWidth;   // reiniciar la animación aunque ya estuviera activa
+    lyFlash.classList.add("song-flash");
     clearTimeout(renderState._flashT);
-    renderState._flashT = setTimeout(() => $("lyrics").classList.remove("song-flash"), 500);
+    renderState._flashT = setTimeout(() => lyFlash.classList.remove("song-flash"), 520);
     $("song").textContent = S.track.name;
     $("artist").textContent = S.track.artist;
     if (S.track.cover) { $("cover").src = S.track.cover; $("cover").style.visibility = "visible"; }
@@ -1667,7 +2280,7 @@ function renderState() {
     $("lineNone").style.display = S.lyrics.length ? "none" : "flex";
     $("lyrics").style.display = S.lyrics.length ? "flex" : "none";
     hideMsg();   // MOSTRAR lyrics + OCULTAR msg AHORA
-    if (realChange) playChannel();
+    if (realChange && _transitionFor !== String(S.track.id)) playChannel();
     return;
   }
   if (S.demo) { $("badge").textContent = "DEMO"; $("badge").style.display = "block"; }
@@ -1678,8 +2291,291 @@ function renderState() {
 function nowPos() {
   const n = performance.now();
   const dt = (n - posAt) / 1000;
-  posAt = n; pos += dt * speed;
+  const correction = speed ? Math.max(-dt * 0.1, Math.min(dt * 0.1, clockCorrection)) : 0;
+  clockCorrection -= correction;
+  posAt = n; pos += dt * speed + correction;
   return pos;
+}
+
+function playbackSample(sample, sent, received) {
+  // Subtract server work from RTT: lyric loading must not become audio latency.
+  // This also works across machines with different wall clocks.
+  const transit = sample.server_processing_ms === undefined && sample.ts
+    ? Math.max(0, Math.min(received - sent, Date.now() - sample.ts * 1000))
+    : Math.max(0, received - sent - (+sample.server_processing_ms || 0)) / 2;
+  return (+sample.progress_ms || 0) / 1000 + (sample.is_playing ? transit / 1000 : 0);
+}
+function setPlaybackClock(value, isPlaying, hard = false) {
+  const current = nowPos();
+  const drift = value - current;
+  if (hard || !isPlaying || playing !== isPlaying || Math.abs(drift) > 0.2) {
+    pos = value; clockCorrection = 0; rhythmEpoch++; partyFlash = null;
+  } else clockCorrection = drift;
+  playing = isPlaying; speed = isPlaying ? 1 : 0; posAt = performance.now();
+}
+
+/* ---------- Calibración y eventos de ritmo, independientes de la letra ---------- */
+let rhythmSettings = {}, rhythmTaps = [], rhythmTapTrack = null, rhythmTapPress = null;
+let rhythmGrid = null, rhythmUIKey = "", rhythmCursor = {key:"", beats:-1, bars:-1, sections:-1};
+function loadRhythmSettings() {
+  try { rhythmSettings = JSON.parse(localStorage.getItem("fv_rhythm") || "{}") || {}; }
+  catch (e) { rhythmSettings = {}; }
+}
+loadRhythmSettings();
+function rhythmCalibration() {
+  const saved = rhythmSettings[curTrack] || {};
+  return {offset:Math.max(-500, Math.min(500, +saved.offset || 0)),
+    genre: Object.hasOwn(GENRE_PROFILES, saved.genre) ? saved.genre : "auto",
+    bpm:Number.isFinite(saved.bpm) && saved.bpm >= 40 && saved.bpm <= 240 ? saved.bpm : 0,
+    anchor:Number.isFinite(saved.anchor) ? saved.anchor : 0};
+}
+function saveRhythmSettings(value) {
+  if (!curTrack) return;
+  rhythmSettings[curTrack] = value;
+  const keys = Object.keys(rhythmSettings);
+  while (keys.length > 200) delete rhythmSettings[keys.shift()];
+  try { localStorage.setItem("fv_rhythm", JSON.stringify(rhythmSettings)); } catch (e) {}
+  rhythmEpoch++; rhythmUIKey = ""; partyFlash = null;
+}
+addEventListener("storage", e => {
+  if (e.key === "fv_rhythm") { loadRhythmSettings(); rhythmEpoch++; rhythmUIKey = ""; partyFlash = null; }
+});
+$("flashOffset").oninput = e => saveRhythmSettings({...rhythmCalibration(), offset:+e.target.value});
+$("resetRhythm").onclick = () => { rhythmTaps = []; saveRhythmSettings({offset:0}); };
+const captureBeatPress = () => { rhythmTapPress = {now:performance.now(), at:nowPos()}; };
+$("tapBeat").onpointerdown = captureBeatPress;
+$("tapBeat").onkeydown = e => { if (!e.repeat && (e.key === " " || e.key === "Enter")) captureBeatPress(); };
+$("tapBeat").onclick = () => {
+  if (!curTrack || !playing) { $("rhythmStatus").textContent = "Reproduce la canción para marcar su ritmo."; return; }
+  const press = rhythmTapPress && performance.now() - rhythmTapPress.now < 1000 ? rhythmTapPress : {now:performance.now(), at:nowPos()};
+  rhythmTapPress = null;
+  const {now, at} = press;
+  const gap = rhythmTaps.length ? now - rhythmTaps[rhythmTaps.length - 1].now : Infinity;
+  if (rhythmTapTrack !== curTrack || gap > 2000 || gap < 200) rhythmTaps = [];
+  rhythmTapTrack = curTrack;
+  rhythmTaps.push({now, at}); rhythmTaps = rhythmTaps.slice(-8);
+  if (rhythmTaps.length < 4) { $("rhythmStatus").textContent = `Marcando ritmo: ${rhythmTaps.length}/4 golpes…`; return; }
+  // Least-squares period over up to eight taps averages hand timing errors.
+  const n = rhythmTaps.length, center = (n - 1) / 2;
+  const mean = rhythmTaps.reduce((sum, tap) => sum + tap.now, 0) / n;
+  let numerator = 0, denominator = 0;
+  rhythmTaps.forEach((tap, i) => { numerator += (i-center)*(tap.now-mean); denominator += (i-center)**2; });
+  const period = numerator / denominator / 1000, bpm = 60 / period;
+  if (bpm < 40 || bpm > 240) { rhythmTaps = []; return; }
+  const anchor = rhythmTaps.reduce((sum, tap, i) => sum + tap.at - i*period, 0) / n;
+  saveRhythmSettings({...rhythmCalibration(), bpm, anchor, offset:0});
+};
+/* Genre is a soft weighting of measured transients, never a fabricated grid. */
+const GENRE_PROFILES = {
+  unknown: {label:"Sin clasificar", weights:[1,1,0.65], hint:"Percusión general; sin compás supuesto."},
+  mixed: {label:"Mixto / otro", weights:[1,1,0.65], hint:"Percusión general; sin compás supuesto."},
+  salsa: {label:"Salsa", weights:[0.75,1.2,0.8], hint:"4/4 habitual; clave 3–2 o 2–3, no tres tiempos. Congas, campana y timbal."},
+  bachata: {label:"Bachata", weights:[0.9,1.1,0.65], hint:"4/4 habitual; bongó, güira y bajo. El tap del baile no fija un acento sonoro."},
+  reggaeton: {label:"Reguetón", weights:[1.2,1,0.45], hint:"4/4 habitual; bombo y caja sincopados del dembow."},
+  merengue: {label:"Merengue", weights:[0.9,1.1,0.7], hint:"Pulso binario, habitualmente 2/4; tambora y güira."},
+  cumbia: {label:"Cumbia", weights:[1,1,0.7], hint:"Pulso binario; percusión y contratiempos según la variante."},
+  electronic: {label:"Electrónica", weights:[1.2,1,0.5], hint:"Prioridad a graves y caja; tempo medido, sin fijarlo por género."},
+  pop: {label:"Pop", weights:[1,1,0.6], hint:"Percusión general; puede cambiar el compás o la producción."},
+  rock: {label:"Rock", weights:[1.1,1,0.55], hint:"Ataques de batería; no todos los temas usan 4/4."},
+};
+let audioInput = "loopback";
+try { if (localStorage.getItem("fv_audio_source") === "grid") audioInput = "grid"; } catch (e) {}
+const liveAudio = {stream:null, state:"idle", packet:null, received:0, sequence:-1,
+  queue:[], key:"", retry:0, lastHit:-Infinity, lastUI:0, discardUntil:0, contextAt:0};
+let genreTrack = null, genreEvidence = {genre:"unknown"}, genreAbort = null;
+const genreCache = new Map();
+$("rhythmInput").value = audioInput;
+function closePercussion() {
+  liveAudio.stream?.close(); liveAudio.stream = null;
+  liveAudio.packet = null; liveAudio.queue = []; liveAudio.sequence = -1;
+  liveAudio.state = "idle"; partyFlash = null;
+}
+$("rhythmInput").onchange = e => {
+  audioInput = e.target.value;
+  try { localStorage.setItem("fv_audio_source", audioInput); } catch (e) {}
+  closePercussion(); rhythmUIKey = ""; maintainPercussion();
+};
+$("genreSelect").onchange = e => {
+  saveRhythmSettings({...rhythmCalibration(), genre:e.target.value});
+  liveAudio.queue = []; updateGenreUI();
+};
+function selectedGenre() {
+  const manual = rhythmCalibration().genre;
+  return GENRE_PROFILES[manual] ? manual : GENRE_PROFILES[genreEvidence.genre] ? genreEvidence.genre : "unknown";
+}
+function updateGenreUI() {
+  const c = rhythmCalibration(), profile = GENRE_PROFILES[selectedGenre()];
+  $("genreSelect").value = c.genre;
+  const origin = c.genre !== "auto" ? "Elegido por ti" : genreEvidence.source === "artist_tags"
+    ? "Sugerido por etiquetas del artista; no confirmado para esta grabación" : "Sin etiquetas suficientes";
+  $("genreStatus").textContent = `${profile.label} · ${origin}. ${profile.hint}`;
+}
+async function loadSongGenre() {
+  if (genreTrack === curTrack) return;
+  genreTrack = curTrack; genreAbort?.abort();
+  const track = curTrack;
+  genreEvidence = genreCache.get(track) || {genre:"unknown"}; updateGenreUI();
+  if (!track || genreCache.has(track) || !S?.track?.artist_ids?.length) return;
+  genreAbort = new AbortController();
+  const controller = genreAbort;
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch("/api/genre?artists=" + encodeURIComponent(S.track.artist_ids.join(",")), {signal:controller.signal});
+    if (!response.ok) return;
+    const result = await response.json();
+    if (curTrack !== track) return;
+    genreEvidence = result; genreCache.set(track, result);
+    if (genreCache.size > 200) genreCache.delete(genreCache.keys().next().value);
+    updateGenreUI();
+  } catch (e) {} finally { clearTimeout(timer); }
+}
+function maintainPercussion() {
+  loadSongGenre();
+  const wantsAudio = audioInput === "loopback" && !S?.demo;
+  const labels = wantsAudio ? ["Acentos fuertes de percusión", "Golpes de percusión", "Posibles drops (estimación)"]
+    : ["Cada compás", "Cada beat", "Cambios de sección (si hay análisis)"];
+  [...$("ctiming").options].forEach((o,i) => { if (o.textContent !== labels[i]) o.textContent = labels[i]; });
+  const active = wantsAudio && playing && S?.track && !document.hidden && !REDUCED_MOTION.matches;
+  if (!active) {
+    if (liveAudio.stream) closePercussion();
+    $("audioStatus").textContent = !wantsAudio ? "Usando mapa / calibración; no se captura audio."
+      : REDUCED_MOTION.matches ? "Audio desactivado por movimiento reducido."
+      : "Captura en pausa; se activa al reproducir con esta ventana visible.";
+    return;
+  }
+  if (liveAudio.stream || performance.now() < liveAudio.retry) return;
+  liveAudio.state = "connecting";
+  const stream = new EventSource("/api/percussion"); liveAudio.stream = stream;
+  stream.onmessage = e => {
+    if (liveAudio.stream !== stream) return;
+    let packet; try { packet = JSON.parse(e.data); } catch (e) { return; }
+    const now = performance.now();
+    liveAudio.packet = packet; liveAudio.received = now; liveAudio.state = packet.state;
+    if (packet.sequence <= liveAudio.sequence) return;
+    liveAudio.sequence = packet.sequence;
+    if (!packet.hit || !playing || document.hidden || lyricsFrozen || now < liveAudio.discardUntil) return;
+    if (!Number.isFinite(packet.age_ms) || packet.age_ms > 180 || !Array.isArray(packet.bands)) return;
+    const profile = GENRE_PROFILES[selectedGenre()];
+    const score = Math.max(...packet.bands.map((s,i) => s * profile.weights[i]));
+    if (score < 4.5 || now - liveAudio.lastHit < 120) return;
+    liveAudio.lastHit = now;
+    const offset = rhythmCalibration().offset;
+    liveAudio.queue.push({at:now - packet.age_ms - Math.min(0, offset), score, packet,
+      key:[curTrack,rhythmEpoch,cfg.timing].join("|")});
+    liveAudio.queue = liveAudio.queue.slice(-8);
+  };
+  stream.onerror = () => {
+    if (liveAudio.stream !== stream) return;
+    closePercussion(); liveAudio.state = "unavailable"; liveAudio.retry = performance.now() + 3000;
+  };
+}
+setInterval(maintainPercussion, 500);
+addEventListener("pagehide", closePercussion);
+document.addEventListener("visibilitychange", () => { if (document.hidden) closePercussion(); else maintainPercussion(); });
+function renderLivePercussion() {
+  if (audioInput !== "loopback" || S?.demo) return false;
+  const now = performance.now(), key = [curTrack,rhythmEpoch,cfg.timing].join("|");
+  if (liveAudio.key !== key || !playing || lyricsFrozen || REDUCED_MOTION.matches) {
+    liveAudio.key = key; liveAudio.queue = []; partyFlash = null;
+    liveAudio.discardUntil = now + 180; liveAudio.contextAt = now;
+  }
+  if (now - liveAudio.lastUI > 250) {
+    liveAudio.lastUI = now; updateGenreUI();
+    const p = liveAudio.packet, fresh = now - liveAudio.received < 1500;
+    const listening = liveAudio.state === "listening" && fresh;
+    $("audioStatus").textContent = listening
+      ? `${p.device} · ${p.level > 0.001 ? "Audio detectado" : "Silencio"} · captura ≈${Math.round(p.age_ms)} ms`
+      : p?.reason || "Esperando salida de audio del PC; no se inventan golpes.";
+    $("rhythmStatus").textContent = listening && p.bpm && now - liveAudio.contextAt >= 8000
+      ? `Percusión detectada · tempo estimado ${p.bpm} BPM · periodicidad ${Math.round(p.tempo_confidence*100)}% (puede ser mitad/doble)`
+      : "Percusión en directo · BPM sin confirmar";
+    const c = rhythmCalibration();
+    $("flashOffset").value = c.offset;
+    $("flashOffsetVal").textContent = `${c.offset > 0 ? "+" : ""}${c.offset} ms`;
+    if (!TRANSLATION_DISPLAY) $("source").textContent = listening ? "RITMO: PERCUSIÓN DEL PC" : "RITMO: SIN AUDIO";
+  }
+  if (!playing || lyricsFrozen || REDUCED_MOTION.matches || document.hidden) return true;
+  const due = liveAudio.queue.filter(e => e.at <= now);
+  liveAudio.queue = liveAudio.queue.filter(e => e.at > now);
+  const event = due.at(-1);
+  if (!event || event.key !== key || now - event.at > 200) return true;
+  const p = event.packet;
+  const hasContext = now - liveAudio.contextAt >= 8000;
+  const drop = hasContext && p.drop_candidate;
+  if (cfg.timing === "bars" && event.score < 7.5) return true; // Strong attacks, NOT inferred downbeats.
+  if (cfg.timing === "sections" && !drop) return true;
+  const interval = hasContext && p.bpm ? 60 / p.bpm : 0.5;
+  if (isChill()) fluidPulse();
+  else {
+    onColor((now - event.at)/1000, interval);
+    if (drop && cfg.dropFx) explodeDrop();
+  }
+  return true;
+}
+function rhythmEvents() {
+  const c = rhythmCalibration();
+  const sections = S.rhythm_source === "spotify" || S.demo ? S.sections || [] : [];
+  if (!c.bpm) return {beats:S.beats || [], bars:S.bars || [], sections};
+  const key = [curTrack, c.bpm, c.anchor, S.track.duration_ms].join("|");
+  if (rhythmGrid?.key !== key) {
+    const step = 60/c.bpm, start = ((c.anchor % step) + step) % step;
+    const end = Math.min(43200, (+S.track.duration_ms || 240000)/1000);
+    const beats = [];
+    for (let at = start; at <= end; at += step) beats.push(at);
+    rhythmGrid = {key, beats, bars:beats.filter((_, i) => i%4 === 0), sections};
+  }
+  return rhythmGrid;
+}
+function latestEvent(times, t) {
+  let lo = 0, hi = times.length;
+  while (lo < hi) { const mid = (lo+hi) >>> 1; if (times[mid] <= t) lo = mid+1; else hi = mid; }
+  return lo-1;
+}
+function renderRhythm(songTime) {
+  if (!S?.track) return;
+  if (renderLivePercussion()) return;
+  const c = rhythmCalibration(), t = songTime + c.offset/1000;
+  const statusKey = [curTrack, c.bpm, c.offset, S.rhythm_source].join("|");
+  if (rhythmUIKey !== statusKey) {
+    rhythmUIKey = statusKey;
+    $("flashOffset").value = c.offset;
+    $("flashOffsetVal").textContent = (c.offset > 0 ? "+" : "") + c.offset + " ms";
+    $("rhythmStatus").textContent = c.bpm ? `Ritmo calibrado · ${c.bpm.toFixed(1)} BPM`
+      : S.rhythm_source === "spotify" ? "Beats del análisis de Spotify"
+      : "Ritmo estimado: marca 4–8 golpes para ajustarlo a esta canción.";
+    if (!TRANSLATION_DISPLAY) $("source").textContent = "LETRAS SINCRONIZADAS · RITMO: " +
+      (c.bpm ? "CALIBRADO" : S.rhythm_source === "spotify" ? "ANÁLISIS SPOTIFY" : "ESTIMADO");
+  }
+  if (!playing || lyricsFrozen) { partyFlash = null; return; }
+  const events = rhythmEvents();
+  const key = [curTrack, rhythmEpoch, cfg.timing, isChill()].join("|");
+  if (rhythmCursor.key !== key) { rhythmCursor = {key, beats:-1, bars:-1, sections:-1}; partyFlash = null; }
+  const due = (kind, action) => {
+    const times = events[kind], i = latestEvent(times, t);
+    if (i <= rhythmCursor[kind]) return;
+    rhythmCursor[kind] = i;
+    // Only the newest event is eligible. No replay of a backlog after seeking,
+    // loading lyrics, or a stalled frame; never fire a fresh pulse late.
+    if (i >= 0 && t - times[i] <= 0.08) action(i, times, t - times[i]);
+  };
+  const flash = (i, times, age) => {
+    colorPtr = i; // same palette phase after seeks and across both displays
+    const beat = latestEvent(events.beats, t);
+    onColor(age, events.beats[beat+1] - events.beats[beat]);
+    if (partyFlash) partyFlash.musicAt = times[i];
+  };
+  due("beats", (i, times, age) => {
+    if (isChill()) fluidPulse();
+    else if (cfg.timing === "beats") flash(i, times, age);
+    else if (cfg.pulseWhite) { pulse(age, times[i+1]-times[i]); if (partyFlash) partyFlash.musicAt = times[i]; }
+  });
+  beatPtr = latestEvent(events.beats, t)+1;
+  if (!isChill() && cfg.timing === "bars") due("bars", flash);
+  due("sections", (i, times, age) => {
+    if (isChill()) return;
+    if (cfg.timing === "sections") flash(i, times, age);
+    if (cfg.dropFx) explodeDrop();
+  });
 }
 
 /* ---------- RENDIMIENTO: UN solo bucle rAF + calidad adaptativa ----------
@@ -1687,7 +2583,7 @@ function nowPos() {
    fluidLoop y _fxLoop): más overhead, orden de pintado impredecible y ninguna
    medida real del coste. Ahora hay un único bucle que ejecuta, en orden,
    letra/ritmo → fluido → partículas, y mide cuánto cuesta cada frame.
-   Objetivo: >100 fps constantes. Si el equipo no llega, la calidad baja sola
+   Objetivo: cadencia estable, también en pantallas de 60 Hz. Si cae, la calidad baja sola
    (lente, estelas, resolución del fluido y partículas). */
 let _perf = {
   level: 3,                  // 3 máximo · 2 alto · 1 bajo · 0 mínimo
@@ -1709,15 +2605,18 @@ function setQuality(level) {
 }
 
 /* Ajuste automático con HISTÉRESIS (nunca oscila rápido):
-   baja si no se llega a 100 fps y sube tras 10 s por encima de 110. */
+   acepta pantallas de 60 Hz: baja tras 2 s por debajo de 45 fps,
+   recupera calidad tras 10 s estables por encima de 55 fps. */
 function autoQuality() {
   if (!cfg.autoQuality) return;
-  if (_perf.fps >= 110) {
+  if (_perf.fps >= 55) {
     _perf.bad = 0;
     if (_perf.level < 3 && ++_perf.good >= 20) { _perf.good = 0; setQuality(_perf.level + 1); }
   } else {
     _perf.good = 0;
-    if (_perf.fps < 100 && _perf.level > 0 && ++_perf.bad >= 4) { _perf.bad = 0; setQuality(_perf.level - 1); }
+    if (_perf.fps < 45 && _perf.level > 0) {
+      if (++_perf.bad >= 4) { _perf.bad = 0; setQuality(_perf.level - 1); }
+    } else _perf.bad = 0;
   }
 }
 
@@ -1736,7 +2635,7 @@ function perfSample(ms) {
   if (el) {
     el.style.display = "block";
     el.textContent = _perf.fps + " fps · " + _perf.ms.toFixed(1) + " ms";
-    el.style.color = _perf.fps >= 100 ? "#00ff88" : _perf.fps >= 55 ? "#ffd700" : "#ff4444";
+    el.style.color = _perf.fps >= 55 ? "#00ff88" : _perf.fps >= 45 ? "#ffd700" : "#ff4444";
   }
   autoQuality();
 }
@@ -1745,40 +2644,50 @@ function perfSample(ms) {
 function renderFrame(t) {
   if (!S || !curTrack) return;
   const L = S.lyrics || [];
-  // PRIMEROS 7 SEGUNDOS: título de la canción a tamaño fijo (no el del slider)
-  if (t < 7.0 && S.track) {
-    const title = "♪ " + S.track.name + " ♪";
-    if (lastShown !== title) showLine(title, S.track.artist || null, 5);
-  } else if (S.lyric && S.lyric.text !== undefined && S.lyric.text !== lastShown) {
-    // Server = autoridad. Freno anti-flip: mínimo 400 ms entre cambios.
-    const nowMs = performance.now();
-    if (!setLyric._last || nowMs - setLyric._last > 400) {
-      setLyric._last = nowMs;
+  // Mientras se carga la pista nueva, la letra vieja queda congelada bajo la
+  // transición: si renderFrame siguiera con el S viejo, avanzaría a una frase
+  // antigua usando la posición de la canción nueva (letra equivocada al aire).
+  if (!lyricsFrozen) {
+    // PRIMEROS 7 SEGUNDOS: título de la canción a tamaño fijo (no el del slider)
+    if (t < 7.0 && S.track) {
+      const name = (S.track.name || "").trim();
+      // En móvil los ♪ decorativos añaden dos palabras y parten el título en
+      // cuatro líneas; el nombre real ya centra mucho mejor.
+      const title = document.body.classList.contains("compact") ? name : "♪ " + name + " ♪";
+      if (lastShown !== title) showLine(title, S.track.artist || null, 5, null);
+    } else if (L.length) {
+      /* La autoridad de cambio de frase son los tiempos exactos de S.lyrics (los
+         mismos que usa el server para /api/sync). Antes se esperaba al poll de
+         250 ms y se comparaba solo el texto: las frases repetidas no reiniciaban
+         el karaoke y el cambio llegaba tarde. */
+      let advanced = false, rewound = false;
+      if (lineIdx >= L.length || (lineIdx >= 0 && t < L[lineIdx].t - 0.25)) {
+        lineIdx = -1; lastShown = null;
+        rewound = true;
+      }
+      while (lineIdx + 1 < L.length && L[lineIdx + 1].t <= t) {
+        lineIdx++;
+        advanced = true;
+      }
+      if (advanced) {
+        const ln = L[lineIdx];
+        showLine(ln.text, ln.back, undefined, ln.words || null);
+      } else if (rewound && lineIdx < 0) {
+        // seek antes de la primera línea: no dejar la letra futura en pantalla
+        showLine("...", null);
+      }
+    } else if (S.lyric && S.lyric.text !== undefined) {
+      // sin lista de frases (raro): usar la línea cruda que manda el server.
+      // La clave incluye idx/t/texto para que una frase REPETIDA reinicie el karaoke.
       const sl = S.lyric;
-      if (sl.text !== lastShown) {
-        lineIdx = sl.idx || 0;
-        showLine(sl.text, sl.back);
+      const key = curTrack + "|" + sl.idx + "|" + sl.t + "|" + sl.text;
+      if (key !== lastServerKey) {
+        lastServerKey = key;
+        showLine(sl.text, sl.back, undefined, sl.words || null);
       }
     }
-  } else {
-    // seek hacia atrás → resetear puntero
-    if (lineIdx >= L.length || (lineIdx > 0 && L[lineIdx] && t < L[lineIdx].t - 0.5)) {
-      lineIdx = -1; lastShown = null;
-    }
-    while (lineIdx + 1 < L.length && L[lineIdx + 1].t <= t) {
-      lineIdx++;
-      const err = t - L[lineIdx].t;
-      if (Math.abs(err) < 0.8) pos -= err * 0.6;
-    }
-    // FALLBACK LOCAL: solo si el server no manda línea (sin conexión)
-    const serverHasLyric = S.lyric && S.lyric.text !== undefined;
-    if (!serverHasLyric && lineIdx >= 0 && lineIdx < L.length && L[lineIdx].text !== lastShown) {
-      const nowMs = performance.now();
-      if (!setLyric._last || nowMs - setLyric._last > 400) {
-        setLyric._last = nowMs;
-        showLine(L[lineIdx].text, L[lineIdx].back);
-      }
-    }
+    prefetchTranslations();
+    updateKaraoke(t);
   }
   // barra de progreso a ~10 Hz y solo si el porcentaje cambia de verdad
   if (S.track.duration_ms) {
@@ -1815,40 +2724,7 @@ function renderFrame(t) {
       tickSpectrum(t, fluidEnergy);
     }
   }
-  if (playing && isChill()) {
-    // MODO CHILL: los blobs pulsan con cada beat de la canción
-    const B = S.beats || [];
-    while (beatPtr < B.length && B[beatPtr] <= t) { fluidPulse(); beatPtr++; }
-  } else if (playing) {
-    const B = S.beats || [], BR = S.bars || [], SE = S.sections || [];
-    if (cfg.timing === "beats") {
-      while (beatPtr < B.length && B[beatPtr] <= t) {
-        if (cfg.pulseWhite || cfg.pulseColor) pulse();
-        onColor();
-        beatPtr++;
-      }
-    } else {
-      while (beatPtr < B.length && B[beatPtr] <= t) { if (cfg.pulseWhite) pulse(); beatPtr++; }
-      if (cfg.timing === "sections") {
-        while (secPtr < SE.length && SE[secPtr] <= t) {
-          onColor(); dropFlash();
-          if (cfg.dropFx) explodeDrop();   // 💥 partículas en el drop
-          secPtr++;
-        }
-      } else {
-        while (barPtr < BR.length && BR[barPtr] <= t) {
-          const err = t - BR[barPtr];
-          if (Math.abs(err) < 1.0) pos -= err * 0.75;
-          onColor(); barPtr++;
-        }
-        while (secPtr < SE.length && SE[secPtr] <= t) {
-          const err2 = t - SE[secPtr];
-          if (Math.abs(err2) < 1.0) pos -= err2 * 0.75;
-          dropFlash(); secPtr++;
-        }
-      }
-    }
-  }
+  renderRhythm(t);
 }
 
 /* Bucle maestro ÚNICO: render → fluido → partículas → métricas. */
@@ -1858,8 +2734,17 @@ function rafLoop() {
   const t0 = performance.now();
   try {
     renderFrame(t);
+    partyFlashStep(performance.now(), t);
     fluidStep(t);
     fxStep();
+    if (window.FiestaShaders) {
+      const screen = $("screen");
+      window.FiestaShaders.tick(performance.now(), {
+        cfg, quality: _perf.level, reduced: REDUCED_MOTION.matches, egg: eggActive,
+        chill: isChill(), energy: fluidEnergy, tempo: (S && S.tempo) || 120,
+        palette: coverPalette, width: screen.clientWidth, height: screen.clientHeight,
+      });
+    }
   } catch (e) {
     console.error("frame error", e);   // un frame roto no debe matar el bucle
   }
@@ -2047,6 +2932,17 @@ function fluidStep(nowT) {
 
   // energía decae suavemente → pulso tras cada beat
   fluidEnergy *= Math.pow(0.955, dt * 60);
+  // The GPU owns the fluid when ready; keep Canvas 2D available as fallback.
+  if (window.FiestaShaders?.fluidActive) {
+    if (!fluidStep._fc || nowT - fluidStep._fc > 250) {
+      fluidStep._fc = nowT;
+      // The previous bg color belongs to party mode, not to the new shader.
+      const pal = coverPalette || [[78,31,154],[23,155,180],[231,74,145]];
+      const lum = pal.reduce((sum, c) => sum + (c[0]*.2126 + c[1]*.7152 + c[2]*.0722)/255, 0) / pal.length;
+      applyHysteresis(lum * .8);
+    }
+    return;
+  }
   const tempo = (S && S.tempo) || 120;
   const ms = nowT / 1000;
   const breathe = 0.06 * Math.sin(ms * (tempo/60) * Math.PI);   // respiración al BPM
@@ -2176,14 +3072,61 @@ function applyHysteresis(avgLum) {
   }
 }
 
-function onColor() {
+let partyFlash = null;
+let partyColor = "#ff1744";
+
+// Instant attack, exponential release, then exact black for the rest of the beat.
+// Use elapsed time (not frame counts) so 60 Hz and 144 Hz have the same envelope.
+function partyEnvelope(age, duration) {
+  if (age < 0 || age >= duration) return 0;
+  const hold = Math.min(120, duration * 0.22);
+  if (age <= hold) return 1;
+  const u = (age - hold) / (duration - hold);
+  return (Math.exp(-1.2 * u) - Math.exp(-1.2)) / (1 - Math.exp(-1.2));
+}
+
+function startPartyFlash(color, age = 0, interval) {
+  const beatMs = Number.isFinite(interval) && interval > 0
+    ? interval * 1000 : 60000 / Math.max(30, rhythmCalibration().bpm || (S && S.tempo) || 120);
+  const duration = beatMs * 0.94;
+  partyFlash = {color, start: performance.now() - Math.max(0, age) * 1000,
+    duration, track: curTrack};
+}
+
+function partyFlashStep(now, songTime = pos) {
+  const f = $("flash");
+  const chill = isChill();
+  if (chill || eggActive || !playing || REDUCED_MOTION.matches ||
+      partyFlash?.track !== curTrack || (!cfg.pulseColor && !cfg.pulseWhite)) partyFlash = null;
+  f.style.transition = "none";
+  if (!chill && !eggActive) {
+    $("bg").style.backgroundColor = "#000";
+    setTextColor("#ffffff");
+  }
+  const strength = Math.max(0, Math.min(100, +cfg.flashStrength || 0)) / 100;
+  const age = partyFlash?.musicAt !== undefined
+    ? (songTime + rhythmCalibration().offset / 1000 - partyFlash.musicAt) * 1000
+    : partyFlash ? now - partyFlash.start : 0;
+  const envelope = partyFlash ? partyEnvelope(age, partyFlash.duration) : 0;
+  if (partyFlash) f.style.background = partyFlash.color;
+  f.style.opacity = String(envelope * strength);
+  if (partyFlash && age >= partyFlash.duration) partyFlash = null;
+}
+
+function onColor(age = 0, interval) {
   if (isChill()) {   // el fluido ES el fondo: no pisarlo con color plano
     setContrast("#ffffff");
     return;
   }
-  const c = newColor();
-  $("bg").style.backgroundColor = c;
-  setContrast(c.startsWith("#") ? hexToRgb(c) : c);
+  partyColor = newColor();
+  if (eggActive) {
+    $("bg").style.backgroundColor = partyColor;
+    setContrast(partyColor.startsWith("#") ? hexToRgb(partyColor) : partyColor);
+    return;
+  }
+  if (cfg.pulseColor || cfg.pulseWhite) {
+    startPartyFlash(cfg.pulseWhite ? "#fff" : partyColor, age, interval);
+  }
 }
 
 function hexToRgb(h) {
@@ -2193,42 +3136,50 @@ function hexToRgb(h) {
   return "rgb(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + ")";
 }
 
-function pulse() {
-  const f = $("flash");
-  // FUERZA DEL FLASH configurable (0-100). Color según paleta activa:
-  // flash del color del beat en vez de blanco cuando "Pulso de color" está ON.
-  const s = Math.max(0, Math.min(100, +cfg.flashStrength || 0)) / 100;
-  if (s <= 0) return;                       // fuerza 0 = sin flashes
-  if (cfg.pulseColor && !cfg.pulseWhite) {
-    // flash DEL COLOR ACTUAL: el fondo se aclara y vuelve, sin blanco
-    const bg = $("bg").style.backgroundColor || "rgb(255,23,68)";
-    f.style.background = bg;
-    f.style.transition = "none";
-    f.style.opacity = String(s * 0.55);     // el color no necesita tanta opacidad
-    requestAnimationFrame(() => { f.style.transition = "opacity .4s ease-out"; f.style.opacity = "0"; });
-    setTimeout(() => { f.style.background = "#fff"; }, 450);
-  } else {
-    f.style.background = "#fff";
-    f.style.transition = "none"; f.style.opacity = String(s * 0.30);
-    requestAnimationFrame(() => { f.style.transition = "opacity .35s ease-out"; f.style.opacity = "0"; });
-  }
+function pulse(age = 0, interval) {
+  if (!isChill()) startPartyFlash(cfg.pulseWhite ? "#fff" : partyColor, age, interval);
 }
 function dropFlash() {
-  if (+cfg.flashStrength === 0) return;
-  const f = $("flash");
-  f.style.background = "#fff";
-  f.style.transition = "none"; f.style.opacity = "0.3";
-  requestAnimationFrame(() => { f.style.transition = "opacity .5s ease-out"; f.style.opacity = "0"; });
+  // Drops keep the selected colour and envelope; no independent white tail.
+  // Particles still mark the section change without filling the black interval.
+  if (partyFlash && cfg.pulseWhite) partyFlash.color = "#fff";
 }
 
-/* ---------- transiciones al cambiar de canción (3 estilos) ---------- */
+/* ---------- transiciones al cambiar de canción (4 estilos) ---------- */
+// Pista para la que tick() ya disparó la transición: renderState() no debe
+// volver a arrancarla al terminar de cargar el estado (doble corte).
+let _transitionFor = null;
+function clearTransitions() {
+  window.FiestaShaders?.cancelTransition();
+  clearTimeout(playFlashColor._t);
+  clearTimeout(playVinyl._t);
+  clearTimeout(playChannel._t);
+  clearTimeout(playChannel._t1);
+  clearTimeout(playShutter._t);
+  playVinyl._gen = (playVinyl._gen || 0) + 1;   // invalida swaps de portada en vuelo
+  const s = $("transOverlay");
+  s.classList.remove("anim-shutter", "anim-vinyl");
+  s.style.display = "none";
+  s.style.transition = "none";
+  s.style.opacity = "";   // los paneles/vinilo deben volver a opacidad 1
+  s.style.background = "";
+  s.innerHTML = "";
+  const ch = $("channel");
+  ch.classList.remove("on");
+  ch.style.background = "";
+}
 function playChannel() {
   playTransitionFor(null);
 }
 /* nextTrackId: si se pasa, el vinilo muestra YA la portada de la canción nueva */
 function playTransitionFor(nextTrackId) {
   const mode = cfg.transition || "tv";
-  if (mode === "none") return;
+  _transitionFor = nextTrackId == null ? null : String(nextTrackId);
+  // cancelar cualquier transición anterior antes de arrancar la nueva:
+  // sus timers no deben ocultar/cortar la transición actual.
+  clearTransitions();
+  if (mode === "none" || REDUCED_MOTION.matches) return;
+  if (window.FiestaShaders?.playTransition(mode)) return;
   if (mode === "tv") return playChannelTV();
   if (mode === "shutter") return playShutter();
   if (mode === "vinyl") return playVinyl(nextTrackId);
@@ -2276,20 +3227,22 @@ function playShutter() {
   s.style.display = "block";
   void s.offsetWidth;
   s.classList.add("anim-shutter");
-  setTimeout(() => { s.classList.remove("anim-shutter"); s.style.display = "none"; }, 1100);
+  clearTimeout(playShutter._t);
+  playShutter._t = setTimeout(() => { s.classList.remove("anim-shutter"); s.style.display = "none"; }, 1150);
 }
 
 /* 3. Vinilo: disco negro gira y sale la nueva portada en el centro.
    nextTrackId: portada de la canción ENTRANTE (antes de cargar su estado). */
 function playVinyl(nextTrackId) {
   const s = $("transOverlay");
+  const gen = (playVinyl._gen = (playVinyl._gen || 0) + 1);
   let cover = (S && S.track && S.track.cover) ? S.track.cover : "";
   // si la transición llega ANTES de recargar el estado, traer la portada nueva
   if (nextTrackId) {
     fetch("/api/track-cover?id=" + encodeURIComponent(nextTrackId), { cache: "no-store" })
       .then(r => r.ok ? r.json() : null)
       .then(d => {
-        if (d && d.cover) {
+        if (d && d.cover && gen === playVinyl._gen) {
           const img = s.querySelector(".vinyl-cover");
           if (img) img.src = d.cover;   // swap en vivo durante el giro
         }
@@ -2306,14 +3259,14 @@ function playVinyl(nextTrackId) {
   void s.offsetWidth;
   s.classList.add("anim-vinyl");
   clearTimeout(playVinyl._t);
-  playVinyl._t = setTimeout(() => { s.classList.remove("anim-vinyl"); s.style.display = "none"; }, 1200);
+  playVinyl._t = setTimeout(() => { s.classList.remove("anim-vinyl"); s.style.display = "none"; }, 1250);
 }
 
 /* ---------- arranque ---------- */
+applyDeviceLayout();   // móvil/tablet/TV: pantalla y tamaño de letra propios
 applyCfg();        // primera: aplica defaults + URL overrides
 initPalPickers();
 updatePresetCount();
-onColor();
 tick();            // sync con server (4 polls/s)
 _rafId = requestAnimationFrame(rafLoop);   // UN solo bucle de render
 
@@ -2321,9 +3274,18 @@ _rafId = requestAnimationFrame(rafLoop);   // UN solo bucle de render
 // Al volver: re-sync inmediato (el browser pausó los RAF, hay que refrescar letra).
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") {
+    clearTimeout(_tickTimer); _tickTimer = null;
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
   } else {
     _tickBusy = false;   // liberar el flag por si quedó colgado
+    _perf.last = 0; _perf.frames = 0; _perf.bad = 0; _perf.good = 0;
+    _tickDelay = 250;
+    clearTimeout(_tickTimer); _tickTimer = null;
+    // La ventana pudo cambiar de tamaño mientras la pestaña estaba oculta
+    // (móvil/tablet, panel redimensionado): recalcular antes de repintar.
+    applyDeviceLayout();
+    applyLens();
+    if (lastShown) fitLyric();
     tick();
     if (!_rafId) _rafId = requestAnimationFrame(rafLoop);
   }
@@ -2343,6 +3305,7 @@ if (location.search.includes("chan")) playChannel();   // test visual inmediato
 /* ---------- COLA: próxima canción (abajo-izquierda) ---------- */
 let _queueTimer = null;
 function refreshQueue() {
+  if (document.visibilityState === "hidden") return;
   fetch("/api/queue", { cache: "no-store" })
     .then(r => r.json())
     .then(d => {

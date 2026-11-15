@@ -5,6 +5,7 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 proj = fso.GetParentFolderName(WScript.ScriptFullName)
 logf = proj & "\fiesta.log"
 py = "C:\Users\moran\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe"
+If fso.FileExists(proj & "\.venv-audio\Scripts\python.exe") Then py = proj & "\.venv-audio\Scripts\python.exe"
 cmdline = "cmd /c cd /d """ & proj & """ && """ & py & """ server.py >> """ & logf & """ 2>&1"
 Do
   ws.Run cmdline, 0, True

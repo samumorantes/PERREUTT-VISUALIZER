@@ -1,8 +1,13 @@
 # sensibles — NUNCA subir
 token.json
+spicy_key.txt
 fiesta.log
 *.pyc
 __pycache__/
+
+# tunel publico (binario, logs y enlace actual)
+tools/
+public_url.txt
 
 # tests / capturas temporales
 egg_test.html
@@ -15,3 +20,5 @@ _check.js
 # repo anterior preservado
 .git.pre-perreutt/
 .freebuff/
+node_modules/
+.venv-audio/
