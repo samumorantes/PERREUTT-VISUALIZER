@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication
 
 from desktop.controller import Controller
-from desktop.preferences import DEFAULTS, validate, egg_kind, find_preset
+from desktop.preferences import DEFAULTS, GENRE_VISUAL_PRESETS, validate, egg_kind, find_preset
 
 
 class NativePreferencesTests(unittest.TestCase):
@@ -104,6 +104,40 @@ class NativePreferencesTests(unittest.TestCase):
         self.assertEqual(egg_kind('Chequéate la historia'),'impact')
         self.assertEqual(egg_kind('otra letra'),'')
         self.assertEqual(find_preset({'album:Old':{'font':'impact'}}, {'album':'Old'})[0],'album:Old')
+
+    def test_genre_styles_preserve_detection_and_accessibility(self):
+        self.track()
+        for key,value in dict(source='loopback',threshold=2.25,timing='bars',reducedMotion=True,
+                              fontSize=10,fromLang='fr',qrEnabled=False).items():
+            self.c.setSetting(key,value)
+        self.c.setSetting('genre','salsa')
+        self.c.setSetting('offset',-80)
+        tracks=copy.deepcopy(self.c.track_settings)
+        for style,recipe in GENRE_VISUAL_PRESETS.items():
+            self.assertEqual(validate(recipe['settings']),recipe['settings'])
+            self.c.applyGenreStyle(style)
+            self.assertEqual(self.c.settings['mood'],recipe['settings']['mood'])
+            self.assertEqual(self.c.base_settings['font'],recipe['settings']['font'])
+            self.assertEqual([s['key'] for s in self.c.genreStyles if s['active']],[style])
+            for key,value in dict(source='loopback',threshold=2.25,timing='bars',reducedMotion=True,
+                                  fontSize=10,fromLang='fr',qrEnabled=False).items():
+                self.assertEqual(self.c.settings[key],value)
+            self.assertEqual(self.c.track_settings,tracks)
+
+    def test_genre_styles_switch_without_leaking_previous_effects(self):
+        self.c.applyGenreStyle('reggaeton')
+        self.assertTrue(self.c.settings['spectrum'])
+        self.assertEqual(self.c.settings['strength'],100)
+        self.c.applyGenreStyle('bachata')
+        self.assertTrue(self.c.view['chill'])
+        self.assertFalse(self.c.settings['spectrum'])
+        self.assertFalse(self.c.settings['dropFx'])
+        self.c.applyGenreStyle('salsa')
+        self.assertFalse(self.c.view['chill'])
+        self.assertTrue(self.c.settings['dropFx'])
+        previous=copy.deepcopy(self.c.settings)
+        self.c.applyGenreStyle('unknown')
+        self.assertEqual(self.c.settings,previous)
 
 
 if __name__ == '__main__':

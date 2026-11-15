@@ -1,6 +1,10 @@
 # FIESTA — changelog
 
 ## En desarrollo — 2026-11-15
+- **Estilos nativos por género:** Salsa · Candela (cálido y dinámico),
+  Bachata · Seda (fluido rosa/violeta) y Reguetón · Neón (flashes intensos).
+  Tarjetas con paleta y aplicación directa en Ajustes → Guardar; conservan
+  sensibilidad, sincronización, calibración y preferencias de accesibilidad.
 - **Funciones web recuperadas en la aplicación nativa:** temas, seis fuentes,
   tamaño/frases/espaciado/mayúsculas, borde y sombra, contraste por zonas,
   paletas de fiesta y portada/manual, estelas, espectro de ritmo, rebote,

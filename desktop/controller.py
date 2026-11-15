@@ -22,7 +22,7 @@ from percussion import classify_genres, loopback
 from desktop.timing import PlaybackClock, PulseScheduler, PALETTE, PROFILES, active_line, word_groups
 
 
-from desktop.preferences import (DEFAULTS, RANGES, ENUMS, THEMES, PALETTES, DARK_DEEP,
+from desktop.preferences import (DEFAULTS, RANGES, ENUMS, THEMES, PALETTES, DARK_DEEP, GENRE_VISUAL_PRESETS,
                                  PRESET_KEYS, clean_setting, validate, preset_keys, find_preset, is_special, egg_kind, random_palette)
 
 
@@ -133,6 +133,31 @@ class Controller(QObject):
     @Property(str, notify=presetsChanged)
     def presetSummary(self):
         return json.dumps(self.presets_store, ensure_ascii=False, indent=2)
+
+    @Property("QVariantList", notify=settingsChanged)
+    def genreStyles(self):
+        return [dict(key=key, name=recipe["name"], description=recipe["description"],
+                     colors=recipe["settings"]["customPalCols"] if recipe["settings"]["mood"] == "chill"
+                     else PALETTES[recipe["settings"]["palette"]][:5],
+                     active=all(self._settings.get(k) == v for k,v in recipe["settings"].items()))
+                for key,recipe in GENRE_VISUAL_PRESETS.items()]
+
+    @Slot(str)
+    def applyGenreStyle(self, key):
+        recipe = GENRE_VISUAL_PRESETS.get(key)
+        if recipe is None:
+            return
+        values = copy.deepcopy(recipe["settings"])
+        self.base_settings.update(values)
+        self._settings.update(copy.deepcopy(values))
+        self.active_preset = ""
+        self.special_track = False
+        self.clearPulse.emit()
+        self.settingsChanged.emit()
+        self.presetsChanged.emit()
+        self.refresh_profile()
+        self.set_view(message="Estilo aplicado: " + recipe["name"])
+        self.save_timer.start(300)
 
     @Property(float, notify=positionChanged)
     def position(self):

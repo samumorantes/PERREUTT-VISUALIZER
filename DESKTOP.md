@@ -59,6 +59,21 @@ elegido manualmente tiene prioridad. Puedes ver, borrar, copiar e importar prese
 JSON, incluidos los antiguos (`fv_presets`) de la web. No se lee automáticamente
 el almacenamiento privado del navegador.
 
+**Guardar → Estilos por género** ofrece tres recetas listas para aplicar:
+
+| Estilo | Aspecto |
+| --- | --- |
+| Salsa · Candela | Fiesta al 90%, atardecer cálido, Space Grotesk, rebote, partículas y transición vinilo |
+| Bachata · Seda | Fluido rosa/violeta, pulso al 45%, Georgia, estelas y transición obturador; sin partículas |
+| Reguetón · Neón | Fiesta al 100%, neón, Impact, espectro, rebote, partículas y transición de color |
+
+Se aplican con un botón y se guardan como configuración habitual. No cambian
+la clasificación de la canción, la sensibilidad, la fuente del ritmo, los tiempos,
+el tamaño de letra ni el movimiento reducido. La elección es manual; no hay un
+cambio automático de estilo al detectar un género. Los presets por música
+existentes mantienen su prioridad al entrar en otra canción. El modo manual
+Fiesta/Fluido sigue siendo global, como en el resto de los presets.
+
 Atajos: **F** cambia Fiesta/Fluido, **Q** muestra el QR, **A** o **,** abre Ajustes,
 **F11** alterna pantalla completa y **Esc** cierra Ajustes/sale de pantalla completa.
 Los atajos de letras se desactivan al editar ajustes. El QR abre la canción actual

@@ -40,6 +40,30 @@ PALETTES = {
     "byn": ["#ffffff","#999999","#dddddd","#666666"],
 }
 DARK_DEEP = ["#120a2d", "#1e0f46", "#08193c", "#32145a", "#0c2350"]
+# Visual recipes only: detection, calibration and accessibility stay independent.
+_GENRE_STYLE_BASE = dict(theme="classic", pulseColor=True, pulseWhite=False,
+                         smartContrast=True, fish=True, scanOn=True, flicker=False,
+                         tilt=False, refresh=False, trails=True, customPal=True)
+GENRE_VISUAL_PRESETS = {
+    "salsa": dict(name="Salsa · Candela", description="Rojo, ámbar y dorado; letra con rebote y partículas en los drops.",
+        settings=dict(_GENRE_STYLE_BASE, mood="party", palette="sunset", strength=90,
+                      font="grotesk", fluidStyle=1, beatBounce=True, spectrum=False,
+                      dropFx=True, transition="vinyl", lens=16, scan=32, mask=20,
+                      vignette=35, grain=12, stroke=2, shadow=45,
+                      customPalCols=["#a62620","#e45125","#f29c32","#d3b34d","#77312c"])),
+    "bachata": dict(name="Bachata · Seda", description="Fluido rosa y violeta, estelas suaves y luz discreta al ritmo.",
+        settings=dict(_GENRE_STYLE_BASE, mood="chill", palette="pastel", strength=45,
+                      font="georgia", fluidStyle=0, beatBounce=False, spectrum=False,
+                      dropFx=False, transition="shutter", lens=8, scan=16, mask=8,
+                      vignette=42, grain=5, stroke=1, shadow=55,
+                      customPalCols=["#301c4a","#754565","#b9768c","#584b8c","#302844"])),
+    "reggaeton": dict(name="Reguetón · Neón", description="Flashes intensos, magenta y cian, espectro y letra contundente.",
+        settings=dict(_GENRE_STYLE_BASE, mood="party", palette="neon", strength=100,
+                      font="impact", fluidStyle=2, beatBounce=True, spectrum=True,
+                      dropFx=True, transition="flashcolor", lens=22, scan=48, mask=32,
+                      vignette=40, grain=18, stroke=3, shadow=65,
+                      customPalCols=["#fe1bb0","#7428ed","#00cce5","#272477","#a512bd"])),
+}
 PRESET_KEYS = set(DEFAULTS) - {"mood","autoQuality","quality","source","threshold","fromLang","toLang","globalLock","reducedMotion"}
 WEB_KEYS = dict(fs="fontSize",lensStrength="lens",mode="palette",flashStrength="strength",vig="vignette",noise="grain",moodOverride="mood")
 

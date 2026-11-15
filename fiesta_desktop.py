@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--smoke-showcase", action="store_true")
     parser.add_argument("--smoke-tab", type=int, choices=range(4), default=0)
     parser.add_argument("--smoke-lens", type=float)
+    parser.add_argument("--smoke-style", choices=('salsa','bachata','reggaeton'))
     args = parser.parse_args()
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FIESTA-Native"
@@ -75,6 +76,8 @@ def main():
     controller = Controller(data, smoke=args.smoke_test)
     if args.smoke_test and args.smoke_lens is not None:
         controller.setSetting("lens", args.smoke_lens)
+    if args.smoke_test and args.smoke_style:
+        controller.applyGenreStyle(args.smoke_style)
     engines = []
     windows = []
     second = None

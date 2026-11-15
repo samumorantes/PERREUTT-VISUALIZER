@@ -182,6 +182,27 @@ Popup {
         id: accountPage
         Column {
             spacing: 15
+            Heading { text: "ESTILOS POR GÉNERO" }
+            Hint { text: "Elige un aspecto. La sensibilidad y la sincronización se conservan. Puedes guardarlo para una canción, artista o álbum más abajo." }
+            Repeater {
+                model: bridge.genreStyles
+                Rectangle {
+                    required property var modelData
+                    width: parent.width; height: recipeContent.height+24; radius: 14
+                    color: modelData.active ? "#224bd9ae" : "#12ffffff"
+                    border.color: modelData.active ? "#809ce9d1" : "#28ffffff"
+                    Column {
+                        id: recipeContent; x: 12; y: 12; width: parent.width-24; spacing: 8
+                        Label { width: parent.width; text: modelData.name; color: "white"; font.pixelSize: 16; font.bold: true }
+                        Hint { text: modelData.description }
+                        Row {
+                            spacing: 6
+                            Repeater { model: modelData.colors; Rectangle { required property string modelData; width: 22; height: 8; radius: 4; color: modelData } }
+                        }
+                        GlassButton { text: modelData.active ? "Aplicado" : "Aplicar estilo"; enabled: !modelData.active; onClicked: bridge.applyGenreStyle(modelData.key) }
+                    }
+                }
+            }
             Heading { text: "PRESETS POR MÚSICA" }
             Toggle { text: "Bloquear configuración global"; checked: bridge.settings.globalLock; onToggled: bridge.setSetting("globalLock",checked) }
             Hint { text: bridge.view.preset ? "Activo: " + bridge.view.preset : "Guarda este aspecto para una canción, artista o álbum." }
