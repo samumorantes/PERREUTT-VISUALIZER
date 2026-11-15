@@ -1,5 +1,34 @@
 # Third-party notices
 
+## Native desktop edition
+
+- Qt and PySide6 6.11.3 / Shiboken6: LGPL-3.0, GPL options and commercial
+  licensing depending on component. This edition uses Qt Core, Gui, Qml, Quick,
+  Quick Controls and Network under the LGPL option, with dynamic libraries in
+  the onedir package. No WebEngine or WebView is used. Preserve the license
+  texts in `_internal/licenses`, and allow replacement/debugging of the shared
+  libraries as required by their licenses.
+  Sources: https://download.qt.io/official_releases/qt/6.11/6.11.3/submodules/
+  and https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.3-src/
+- PyInstaller 6.22.3: GPL-2.0-or-later with its bootloader exception; applications
+  bundled by PyInstaller are not thereby required to use the GPL.
+  https://pyinstaller.org/en/stable/license.html
+- fontTools 4.61.1 and Brotli 1.2.0: MIT; build-time conversion of the existing
+  ArcadeClassic WOFF and Space Grotesk WOFF2 to native TTF files.
+  https://github.com/fonttools/fonttools and https://github.com/google/brotli
+- python-qrcode 8.2: BSD-3-Clause; local QR matrix generation, rendered with Qt.
+  https://github.com/lincolnloop/python-qrcode
+- Space Grotesk: SIL Open Font License 1.1; the font license and the existing
+  ArcadeClassic author's notice are included in `_internal/licenses`.
+- NumPy / PyAudioWPatch and their bundled libraries: see below and the full
+  distribution notices copied to `_internal/licenses` by the build.
+- The CRT/background GLSL in `desktop/shaders` is project code, not the web
+  shaders.com runtime. The existing TV frame and font assets are reused.
+
+Dependency license texts are copied from installed wheel metadata during the
+build. The build scripts and editable Python/QML/shader sources are supplied in
+this repository so the application can be rebuilt against modified libraries.
+
 ## Optional local audio dependencies
 
 Installed into `.venv-audio` by `setup_audio.ps1`; not included in the JavaScript bundle.

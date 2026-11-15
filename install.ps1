@@ -2,7 +2,12 @@
 # Crea: carpeta en %LOCALAPPDATA%\FIESTA, acceso directo en Escritorio y Menú Inicio,
 # tarea programada que auto-arranca el server al iniciar sesión, y abre la app.
 # Uso:  powershell -ExecutionPolicy Bypass -File install.ps1
+param([switch]$Web)
 $ErrorActionPreference = "Stop"
+if (-not $Web) {
+    & (Join-Path $PSScriptRoot 'install_desktop.ps1')
+    exit
+}
 
 $src     = $PSScriptRoot
 $appDir  = "$env:LOCALAPPDATA\FIESTA"
@@ -30,7 +35,7 @@ Write-Host "[1/5] Archivos copiados a $appDir"
 # 2) Lanzador .cmd (doble clic = abrir app; el server lo levanta el launcher)
 $cmd = @'
 @echo off
-start "" pythonw "%LOCALAPPDATA%\FIESTA\fiesta_launcher.py"
+start "" pythonw "%LOCALAPPDATA%\FIESTA\fiesta_launcher.py" --web
 '@
 Set-Content -Path "$env:LOCALAPPDATA\FIESTA\FIESTA.cmd" -Value $cmd -Encoding ASCII
 

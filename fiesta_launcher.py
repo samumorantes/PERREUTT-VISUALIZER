@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FIESTA launcher — garantiza que el server esté vivo y abre la app en Edge/Chrome."""
+"""Launch native FIESTA; --web explicitly selects the legacy browser edition."""
 import os
 import subprocess
 import sys
@@ -83,6 +83,17 @@ def open_browser():
 
 
 def main():
+    if "--web" not in sys.argv:
+        native = os.path.join(HERE, "dist", "FIESTA", "FIESTA.exe")
+        pythonw = os.path.join(HERE, ".venv-desktop", "Scripts", "pythonw.exe")
+        if os.path.isfile(native):
+            subprocess.Popen([native], cwd=os.path.dirname(native))
+            return 0
+        if os.path.isfile(pythonw) and os.path.isfile(os.path.join(HERE, "desktop", "shaders", "crt.qsb")):
+            subprocess.Popen([pythonw, os.path.join(HERE, "fiesta_desktop.py")], cwd=HERE)
+            return 0
+        notify("La edición nativa todavía no está construida.\nEjecuta setup_desktop.ps1 y build_desktop.ps1.\n\nLa edición web se abre explícitamente con --web.")
+        return 1
     if not server_alive():
         try:
             start_server()

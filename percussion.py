@@ -90,7 +90,9 @@ class PercussionDetector:
         if at - self.last_tempo >= 0.5:
             self.last_tempo = at
             self._tempo()
-        hit = bool(scores.max() >= 2.5 and at - self.last_hit >= 0.09)
+        # Pass softer candidates to the visualizer; its genre-weighted threshold
+        # decides which ones flash. A higher fixed floor defeats sensitivity UI.
+        hit = bool(scores.max() >= 1.25 and at - self.last_hit >= 0.09)
         drop = False
         if hit:
             self.last_hit = at

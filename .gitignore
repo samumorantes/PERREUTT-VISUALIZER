@@ -22,3 +22,9 @@ _check.js
 .freebuff/
 node_modules/
 .venv-audio/
+.venv-desktop/
+build/
+dist/
+desktop/shaders/*.qsb
+desktop/arcade.ttf
+desktop/grotesk.ttf

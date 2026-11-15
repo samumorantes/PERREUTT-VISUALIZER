@@ -1,6 +1,27 @@
 # FIESTA — changelog
 
 ## En desarrollo — 2026-11-15
+- **Funciones web recuperadas en la aplicación nativa:** temas, seis fuentes,
+  tamaño/frases/espaciado/mayúsculas, borde y sombra, contraste por zonas,
+  paletas de fiesta y portada/manual, estelas, espectro de ritmo, rebote,
+  partículas y cuatro transiciones. Presets canción/artista/álbum con bloqueo
+  global, restauración de la base e importación JSON; QR de la canción,
+  easter eggs y tema Joji; controles CRT completos y calidad automática.
+  Ajustes organizados en Letra/Ritmo/CRT/Guardar, desconexión y restablecimiento.
+  Inventario y diferencias de renderizado en desktop/FEATURE_PARITY.md.
+- **Correcciones visuales nativas:** lente que conserva los límites de la imagen
+  sin repetir píxeles del borde; progreso separado del borde para evitar la banda
+  gris estirada. Ajustes con cristal desenfocado, reflejos y pestañas Letra/Ritmo/
+  CRT/Guardar; controles y botones coherentes con el panel.
+- **Flashes nativos más sensibles e intensos:** umbral inicial 1,75, fuerza 85%
+  y filtro interno de candidatos reducido a 1,25 para admitir ataques suaves.
+  El control de umbral explica que bajarlo aumenta la sensibilidad.
+- **Edición nativa Windows:** Qt Quick con Direct3D 11, sin navegador/WebView.
+  Render GPU de fondos, flashes y cristal curvado con letra y cabecera; Spotify,
+  traducción y WASAPI en hilos de trabajo. Segunda ventana nativa con reloj
+  compartido, ajustes persistentes y paquete FIESTA.exe con Python incluido.
+  Build reproducible, prueba gráfica aislada y lanzador nativo por defecto.
+  Uso, construcción y límites de integración detallados en DESKTOP.md.
 - **Umbral de flashes más alto:** de 3 a 4,5 en percusión general y de 6 a 7,5
   en acentos fuertes, para reducir pulsos por ataques débiles.
 - **Percusión local sin micrófono:** captura WASAPI compartida, transitorios por

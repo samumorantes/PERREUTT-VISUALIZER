@@ -4,6 +4,19 @@ Muestra la **frase que se está cantando** en pantalla grande, con fondos que la
 
 ![FIESTA](fiesta.ico)
 
+## Aplicación nativa para Windows
+
+La edición nativa usa **Qt Quick y Direct3D 11**, sin navegador ni WebView.
+Abre [FIESTA.exe](dist/FIESTA/FIESTA.exe) y conserva toda su carpeta.
+Incluye los controles del visualizador web: Spotify, karaoke, percusión WASAPI,
+temas, paletas, presets por música, transiciones, partículas, CRT, QR, easter eggs
+y segunda pantalla traducida. [Inventario de funciones](desktop/FEATURE_PARITY.md).
+El lanzador ahora da prioridad a esta edición; `--web` abre la anterior.
+Consulta [DESKTOP.md](DESKTOP.md) para construirla, conectarla y configurar sus
+efectos nativos. Tras construirlo, `install.ps1`
+instala la edición nativa por usuario; `install.ps1 -Web` conserva la instalación
+antigua descrita más abajo.
+
 ## ✨ Qué hace
 
 - **Letra sincronizada** palabra a palabra y **karaoke por sílaba** (Spicy Lyrics → Spotify → LRCLIB → lyrics.ovh, con respaldo: nunca dice "NO LYRICS")
@@ -15,7 +28,7 @@ Muestra la **frase que se está cantando** en pantalla grande, con fondos que la
 - **Cola de reproducción** y estado de conexión en pantalla
 - **Mueble de TV vintage** (activable), lente ojo de pez real, temas completos
 - **Presets por canción/artista/álbum**, paleta manual, espectro CRT, partículas en drops
-- **QR para votar**, segunda pantalla con la letra traducida y contraste inteligente por zonas
+- **QR de la canción en Spotify**, segunda pantalla con la letra traducida y contraste inteligente por zonas
 - **Calidad adaptativa** para mantener una cadencia estable, también en pantallas de 60 Hz (lente, estelas y resolución del fluido)
 - **Easter eggs** 🐰
 
@@ -26,7 +39,7 @@ Muestra la **frase que se está cantando** en pantalla grande, con fondos que la
 3. Doble clic en:
 
 ```
-install.ps1   →   clic derecho → "Ejecutar con PowerShell"
+install.ps1 -Web   →   instalación de la edición web
 ```
 
 Eso instala todo: accesos directos con icono, auto-arranque y abre FIESTA.
