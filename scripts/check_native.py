@@ -25,6 +25,16 @@ try:
     error_log = data_directory() / 'startup-error.log'
     if failed and error_log.exists():
         detail += '\n' + error_log.read_text(encoding='utf-8')[-4000:]
+    crash_log = data_directory() / 'native-crash.log'
+    if failed and crash_log.exists():
+        detail += '\n' + crash_log.read_text(encoding='utf-8')[-2400:]
+    if failed and sys.platform == 'darwin':
+        # Distinguish a bundle teardown failure from the same Qt scenes run
+        # directly in Python. Only performed to diagnose a failing package.
+        source = subprocess.run([sys.executable, str(root / 'fiesta_desktop.py'),
+                                 '--smoke-test', '--smoke-output', str(output.with_stem('smoke-source'))],
+                                capture_output=True, text=True, timeout=60)
+        detail += '\nSource exit code: ' + str(source.returncode) + '\n' + source.stdout + source.stderr
 except subprocess.TimeoutExpired as exc:
     detail, failed = str(exc), True
 (root / 'build/render.log').write_text(detail, encoding='utf-8')

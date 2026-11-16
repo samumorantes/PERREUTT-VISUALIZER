@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+import faulthandler
 
 from native_platform import data_directory, graphics_backend
 
@@ -33,6 +34,10 @@ def main():
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     data = data_directory()
     data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Keep the descriptor open until process exit, including interpreter/Qt
+    # teardown. Fatal native crashes otherwise have no stderr in app bundles.
+    crash_fd = os.open(data / 'native-crash.log', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    faulthandler.enable(file=crash_fd)
     # Migrate local credentials only at runtime; they are never build inputs.
     origin = Path(sys.executable).parent if getattr(sys, "frozen", False) else root
     if not args.smoke_test and not (data / '.credentials-imported').exists():
@@ -202,6 +207,7 @@ def main():
 
         QTimer.singleShot(4000, capture)
     app.exec()
+    os.write(crash_fd, b'Event loop stopped; releasing windows\n')
     # Stop render threads while the application and all scene contexts are
     # still alive. Metal must release its windows before Qt's global teardown.
     for window in windows:
@@ -212,14 +218,17 @@ def main():
         window.hide()
         window.releaseResources()
     app.processEvents()
+    os.write(crash_fd, b'Destroying QML engines\n')
     for engine in engines:
         delete(engine)
     engines.clear()
     windows.clear()
+    os.write(crash_fd, b'Destroying controller and application\n')
     delete(controller)
     delete(app)
     qInstallMessageHandler(None)
     log.close()
+    os.write(crash_fd, b'Qt cleanup complete; returning to interpreter\n')
     return result_code
 
 
