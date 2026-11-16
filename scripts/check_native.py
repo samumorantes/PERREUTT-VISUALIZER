@@ -32,6 +32,6 @@ print(detail)
 if failed:
     # Make remote failures diagnosable through public check annotations as well
     # as the downloadable logs; no account credentials are involved in smoke.
-    message = detail[-6000:].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+    message = detail[-2800:].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
     print('::error::' + message)
     raise SystemExit(1)
