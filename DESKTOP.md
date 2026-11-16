@@ -1,4 +1,9 @@
-# FIESTA Native para Windows
+# FIESTA Native · guía de uso
+
+La interfaz y funciones son compartidas por Windows, macOS y Linux.
+Consulta [instalación, audio y requisitos por plataforma](docs/PLATFORMS.md).
+Las instrucciones de EXE/WASAPI que siguen corresponden a Windows; macOS usa
+Metal y BlackHole 2ch, y Linux OpenGL y el monitor PulseAudio/PipeWire.
 
 ## Instalador EXE
 

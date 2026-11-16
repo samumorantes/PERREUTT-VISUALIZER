@@ -1,18 +1,27 @@
 # Native onedir build: replaceable Qt shared libraries, no Chromium/WebEngine.
 from pathlib import Path
 from importlib.metadata import distribution
+import sys
+from PyInstaller.utils.hooks import collect_data_files
 
 root = Path(SPECPATH)
 datas = [(str(root / 'desktop' / '*.qml'), 'desktop'),
          (str(root / 'desktop' / '*.ttf'), 'desktop'),
+         (str(root / 'desktop' / 'artwork' / 'tv-frame-perreutt-v1.png'), 'desktop/artwork'),
          (str(root / 'desktop' / 'shaders' / '*.qsb'), 'desktop/shaders'),
          (str(root / 'desktop' / 'licenses' / '*.txt'), 'licenses'),
          (str(root / 'fonts' / 'user' / 'pizzadudedotdk.txt'), 'licenses/ArcadeClassic'),
          (str(root / 'tv-frame-clean.png'), '.'), (str(root / 'fiesta.ico'), '.'),
          (str(root / 'THIRD_PARTY_NOTICES.md'), '.'),
          (str(root / 'DESKTOP.md'), '.'),
+         (str(root / 'docs' / 'PLATFORMS.md'), 'docs'),
          (str(root / 'desktop' / 'FEATURE_PARITY.md'), 'desktop')]
-for package in ('PySide6', 'PySide6-Essentials', 'PySide6-Addons', 'shiboken6', 'numpy', 'PyAudioWPatch', 'pyinstaller', 'qrcode'):
+if sys.platform != 'win32':
+    # SoundCard loads CFFI declarations from header files at runtime.
+    datas += collect_data_files('soundcard')
+packages = ['PySide6', 'PySide6-Essentials', 'PySide6-Addons', 'shiboken6', 'numpy', 'pyinstaller', 'qrcode']
+packages += ['PyAudioWPatch'] if sys.platform == 'win32' else ['SoundCard', 'cffi', 'pycparser']
+for package in packages:
     dist = distribution(package)
     for file in dist.files or []:
         if any(part.lower() in ('licenses', 'license', 'copying') for part in file.parts) or file.name.lower().startswith(('license', 'copying', 'notice')):
@@ -28,6 +37,9 @@ a = Analysis(['fiesta_desktop.py'], pathex=[str(root)], binaries=[], datas=datas
 # Qt's generic QML hook collects optional modules. Keep only the imports used by
 # this UI, and the Basic controls style. Nothing here uses QtWidgets/WebEngine.
 def needed(entry):
+    # The Windows trimming rules are not valid for Unix frameworks/plugins.
+    if sys.platform != 'win32':
+        return True
     name = entry[0].replace('\\', '/')
     low = name.lower()
     if any(word in low for word in ('webengine', 'webview', 'qtwebchannel', 'qt6web', 'qtwebsockets')):
@@ -63,5 +75,11 @@ a.binaries = [entry for entry in a.binaries if needed(entry)]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='FIESTA', debug=False,
           bootloader_ignore_signals=False, strip=False, upx=False, console=False,
-          icon=str(root / 'fiesta.ico'))
+          icon=str(root / ('desktop/fiesta.icns' if sys.platform == 'darwin' else 'fiesta.ico')))
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='FIESTA')
+if sys.platform == 'darwin':
+    app = BUNDLE(coll, name='FIESTA.app', icon=str(root / 'desktop/fiesta.icns'),
+                 bundle_identifier='org.perreutt.fiesta', version='2.6.0',
+                 info_plist={'NSHighResolutionCapable': True,
+                             'NSMicrophoneUsageDescription': 'FIESTA analiza la salida virtual BlackHole para sincronizar los efectos. No selecciona el micrófono físico.',
+                             'LSApplicationCategoryType': 'public.app-category.music'})

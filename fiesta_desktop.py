@@ -1,4 +1,4 @@
-"""FIESTA native desktop. Qt Quick / Direct3D, without a browser engine."""
+"""FIESTA native desktop. Qt Quick / native GPU, without a browser engine."""
 import argparse
 import json
 import os
@@ -7,7 +7,9 @@ import shutil
 import sys
 import time
 
-os.environ.setdefault("QSG_RHI_BACKEND", "d3d11" if sys.platform == "win32" else "opengl")
+from native_platform import data_directory, graphics_backend
+
+os.environ.setdefault("QSG_RHI_BACKEND", graphics_backend())
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtCore import QObject, QTimer, QUrl, QMetaObject, qInstallMessageHandler
@@ -29,7 +31,7 @@ def main():
     parser.add_argument("--smoke-transition", choices=('tv','shutter','vinyl','flashcolor','none'))
     args = parser.parse_args()
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FIESTA-Native"
+    data = data_directory()
     data.mkdir(parents=True, exist_ok=True)
     # Migrate local credentials only at runtime; they are never build inputs.
     origin = Path(sys.executable).parent if getattr(sys, "frozen", False) else root
@@ -213,7 +215,7 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception:
         import traceback
-        data = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "FIESTA-Native"
+        data = data_directory()
         data.mkdir(parents=True, exist_ok=True)
         (data / "startup-error.log").write_text(traceback.format_exc(), encoding="utf-8")
         if sys.stderr:

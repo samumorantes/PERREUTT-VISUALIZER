@@ -83,7 +83,7 @@ class Controller(QObject):
         self.applying_transition = False
         self.signed_out = False
         self.logout_pending = False
-        self._view = dict(title="FIESTA", artist="Aplicación nativa · Direct3D", cover="", playing=False,
+        self._view = dict(title="FIESTA", artist="Aplicación nativa · GPU", cover="", playing=False,
                           status="Conectando con Spotify…", genre="Sin clasificar", genreKey="auto",
                           genreOrigin="", audio="Esperando reproducción", duration=0.0, chill=False,
                           queue="", offset=0.0, bpm=0.0, demo=False, message="", loggedIn=False,
@@ -805,7 +805,7 @@ class Controller(QObject):
                 return
             if data.get("state") == "listening":
                 bpm = data.get("bpm") if now-self.scheduler.context_at >= 8 else None
-                self.set_view(audio=(data.get("device", "Salida Windows") + (" · audio" if data.get("level", 0) > .001 else " · silencio")), bpm=bpm or 0)
+                self.set_view(audio=(data.get("device", "Salida del sistema") + (" · audio" if data.get("level", 0) > .001 else " · silencio")), bpm=bpm or 0)
                 self.scheduler.ingest(data, now, self.genre(), self._settings["threshold"],
                                       self.calibration().get("offset", 0), self._settings["timing"],
                                       adaptive=self._settings["autoThreshold"],
@@ -818,7 +818,7 @@ class Controller(QObject):
             else:
                 self.scheduler.reset(now)
                 self.update_threshold_status()
-                self.set_view(audio=data.get("reason", "Preparando salida WASAPI…"), bpm=0)
+                self.set_view(audio=data.get("reason", "Preparando captura de salida…"), bpm=0)
         elif kind == "genre" and packet["track"] == self.clock.track:
             previous_genre = self.genre()
             self.evidence = packet["data"]

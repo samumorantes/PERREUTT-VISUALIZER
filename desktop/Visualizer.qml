@@ -262,7 +262,7 @@ ApplicationWindow {
                 }
             }
         }
-        Image { anchors.fill: parent; source: "../tv-frame-clean.png"; visible: bridge.settings.tv; asynchronous: true }
+        Image { anchors.fill: parent; source: "artwork/tv-frame-perreutt-v1.png"; visible: bridge.settings.tv; asynchronous: true }
     }
     TrackTransition { id: trackCurtain; objectName: "trackCurtain"; anchors.fill: parent; z: 50 }
     Row {

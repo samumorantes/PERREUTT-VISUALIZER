@@ -1,0 +1,86 @@
+name: Native builds
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: Windows x64, os: windows-2022}
+          - {name: Linux x64, os: ubuntu-22.04}
+          - {name: macOS Apple Silicon, os: macos-15}
+          - {name: macOS Intel, os: macos-15-intel}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements-*.txt
+      - name: Linux runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libpulse0 xvfb
+      - run: python -m pip install -r requirements-desktop.txt
+      - name: Platform and existing native logic tests
+        run: python -m unittest discover -s tests
+      - name: Build native application
+        run: python scripts/build_native.py
+      - name: Check packaged renderer (Linux)
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a python scripts/check_native.py
+      - name: Check packaged renderer (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: python scripts/check_native.py
+      - name: Package Linux/macOS
+        if: runner.os != 'Windows'
+        run: python scripts/package_native.py
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./build_installer.ps1 -SkipBuild -Version 2.6.0 -Compiler 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe'
+          New-Item -ItemType Directory -Force dist/packages
+          Copy-Item releases/FIESTA-Native-Setup-2.6.0.exe* dist/packages/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-${{ matrix.os }}
+          path: |
+            dist/packages/*
+            build/smoke.*
+          if-no-files-found: warn
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/dist/packages/*

@@ -133,9 +133,9 @@ Popup {
             Heading { text: "ECUALIZADOR DE DETECCIÓN" }
             SettingSlider { label: "Graves · 35–220 Hz (%)"; settingKey: "bassGain"; maximum: 200; increment: 5 }
             SettingSlider { label: "Agudos · 2,5–10 kHz (%)"; settingKey: "trebleGain"; maximum: 200; increment: 5 }
-            Hint { text: "Medios excluidos. 100% = normal; 0% desactiva la banda. Solo afecta a la detección de percusión de Windows, no al sonido ni al mapa de beats." }
+            Hint { text: "Medios excluidos. 100% = normal; 0% desactiva la banda. Solo afecta a la detección de percusión del sistema, no al sonido ni al mapa de beats." }
             Heading { text: "SINCRONIZACIÓN" }
-            SettingChoice { label: "Fuente del ritmo"; settingKey: "source"; labels: ["Percusión de Windows", "Mapa / calibración"]; values: ["loopback","grid"] }
+            SettingChoice { label: "Fuente del ritmo"; settingKey: "source"; labels: ["Percusión del sistema", "Mapa / calibración"]; values: ["loopback","grid"] }
             Hint { text: bridge.view.audio }
             SettingChoice { label: "Disparar con"; settingKey: "timing"; labels: bridge.settings.source === "loopback" ? ["Golpes", "Acentos fuertes", "Posibles drops"] : ["Beats", "Compases", "Secciones"]; values: ["beats","bars","sections"] }
             SettingChoice { label: "Perfil de esta canción"; settingKey: "genre"; current: bridge.view.genreKey; labels: ["Automático", "Salsa", "Bachata", "Reguetón", "Merengue", "Cumbia", "Electrónica", "Pop", "Rock", "Mixto"]; values: ["auto","salsa","bachata","reggaeton","merengue","cumbia","electronic","pop","rock","mixed"] }

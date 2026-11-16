@@ -10,6 +10,7 @@ import queue
 import threading
 import time
 import unicodedata
+import sys
 
 
 GENRE_TERMS = {
@@ -187,6 +188,8 @@ class LoopbackService:
             self.condition.notify_all()
 
     def _run(self):
+        if sys.platform != "win32":
+            return self._run_portable()
         try:
             import numpy as np
             import pyaudiowpatch as pa
@@ -253,6 +256,49 @@ class LoopbackService:
                                     break
             except Exception as exc:
                 self._publish({"state": "unavailable", "reason": "Salida de audio no disponible: " + str(exc)[:160]})
+                time.sleep(2)
+
+    def _run_portable(self):
+        # SoundCard uses PulseAudio (including PipeWire's Pulse server) or
+        # CoreAudio. On macOS only the explicitly named virtual driver is used.
+        from native_platform import output_capture_device
+        last_send = 0.0
+        while True:
+            with self.condition:
+                if not self.clients:
+                    self.thread = None
+                    return
+            try:
+                import soundcard as sc
+                device = output_capture_device(sc)
+                rate, hop = 48000, 512
+                detector = PercussionDetector(rate, hop, self.active_bands)
+                self._publish({"state": "warming", "device": device.name})
+                with device.recorder(samplerate=rate, channels=min(2, device.channels), blocksize=hop) as recorder:
+                    checked = time.monotonic()
+                    while True:
+                        with self.condition:
+                            if not self.clients:
+                                break
+                        before = time.monotonic()
+                        samples = recorder.record(numframes=hop)
+                        now = time.monotonic()
+                        if now - before > .18:
+                            # Reopen after a stalled capture; do not replay queued hits.
+                            break
+                        # CoreAudio/Pulse buffering adds device-dependent latency.
+                        # Use the block midpoint; user calibration compensates the rest.
+                        result = detector.process(samples, now - hop / rate / 2)
+                        if result['hit'] or now - last_send >= .25:
+                            result.update(state="listening", device=device.name)
+                            self._publish(result)
+                            last_send = now
+                        if now - checked > 3:
+                            checked = now
+                            if output_capture_device(sc).id != device.id:
+                                break
+            except Exception as exc:
+                self._publish({"state": "unavailable", "reason": "Salida de audio: " + str(exc)[:180]})
                 time.sleep(2)
 
 

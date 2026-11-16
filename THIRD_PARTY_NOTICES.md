@@ -2,6 +2,11 @@
 
 ## Native desktop edition
 
+- SoundCard 0.4.5 (Linux/macOS): BSD-3-Clause, Bastian Bechtold and contributors.
+  https://github.com/bastibe/SoundCard. CFFI (MIT) and pycparser (BSD) are
+  runtime dependencies; their installed license notices accompany Unix builds.
+  BlackHole is an external, separately installed driver, not bundled here.
+
 - Qt and PySide6 6.11.3 / Shiboken6: LGPL-3.0, GPL options and commercial
   licensing depending on component. This edition uses Qt Core, Gui, Qml, Quick,
   Quick Controls and Network under the LGPL option, with dynamic libraries in

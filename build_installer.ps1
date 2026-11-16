@@ -1,4 +1,4 @@
-param([switch]$SkipBuild, [string]$Compiler, [string]$Version = '2.5.0')
+param([switch]$SkipBuild, [string]$Compiler, [string]$Version = '2.6.0')
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Versión no válida: usa X.Y.Z.' }

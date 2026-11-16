@@ -1,6 +1,18 @@
 # FIESTA — changelog
 
+## 2.6.0 — 2026-11-16
+- Native multiplataforma: Direct3D en Windows, Metal en macOS y OpenGL en Linux.
+- Captura de salida PulseAudio/PipeWire en Linux y BlackHole 2ch en macOS;
+  nunca selecciona el micrófono físico como respaldo. WASAPI se conserva.
+- Datos en rutas propias de cada sistema, compilador común y paquetes DMG/tar.gz.
+- GitHub Actions construye y comprueba el render de Windows, Linux y ambos Mac.
+- Presentación Native con identidad PERRE’UTT, captura real y guía de plataformas.
+
 ## En desarrollo — 2026-11-15
+- **Mueble PERRE’UTT para Native:** marco grafito/cromado con reflejos magenta
+  y cian y tres stickers realizados con los logos originales de la asociación.
+  Composición raster local; conserva exactamente el recorte transparente y el
+  marco anterior. Incluido en el empaquetado nativo.
 - **Instalador Windows 2.5.0:** EXE de Inno Setup con identidad estable para
   actualizar, carpeta por usuario, accesos directos y desinstalación registrada.
   Incluye dependencias y licencias; conserva los datos personales. Generación
