@@ -13,7 +13,7 @@ def prepare():
     from PySide6.QtCore import QLibraryInfo
     from fontTools.ttLib import TTFont
     qt = Path(PySide6.__file__).parent
-    candidates = [qt / 'qsb.exe', qt / 'Qt' / 'libexec' / 'qsb',
+    candidates = [qt / 'qsb.exe', qt / 'qsb', qt / 'Qt' / 'libexec' / 'qsb',
                   Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.LibraryExecutablesPath)) / 'qsb']
     qsb = next((p for p in candidates if p.is_file()), None)
     if qsb is None:
