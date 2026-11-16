@@ -2,6 +2,10 @@
 
 ## Native desktop edition
 
+- macOS uses Qt/PySide6/Shiboken6 6.8.3 (same LGPL-3.0/GPL/commercial licensing
+  options), pinned separately while investigating a Qt 6.11 engine teardown
+  crash on macOS. Sources: https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.8.3-src/
+
 - SoundCard 0.4.5 (Linux/macOS): BSD-3-Clause, Bastian Bechtold and contributors.
   https://github.com/bastibe/SoundCard. CFFI (MIT) and pycparser (BSD) are
   runtime dependencies; their installed license notices accompany Unix builds.
