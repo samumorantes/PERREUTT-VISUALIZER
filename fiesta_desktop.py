@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
 from PySide6.QtCore import QObject, QTimer, QUrl, QMetaObject, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QIcon, QFontDatabase
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, QQmlEngine
 from PySide6.QtQuick import QQuickWindow  # required by the packager
 from shiboken6 import delete
 
@@ -82,25 +82,27 @@ def main():
     grotesk_id = QFontDatabase.addApplicationFont(str(root / 'desktop' / 'grotesk.ttf'))
     grotesk = QFontDatabase.applicationFontFamilies(grotesk_id)[0] if grotesk_id >= 0 else 'Segoe UI'
     controller = Controller(data, smoke=args.smoke_test)
+    QQmlEngine.setObjectOwnership(controller, QQmlEngine.ObjectOwnership.CppOwnership)
     if args.smoke_test and args.smoke_lens is not None:
         controller.setSetting("lens", args.smoke_lens)
     if args.smoke_test and args.smoke_style:
         controller.applyGenreStyle(args.smoke_style)
-    engines = []
+    # Both displays share one QML engine and one controller. Separate engines
+    # must not compete over shared context objects/Qt Quick style singletons.
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("bridge", controller)
+    engine.rootContext().setContextProperty("arcadeFamily", family)
+    engine.rootContext().setContextProperty("groteskFamily", grotesk)
     windows = []
     second = None
 
     def new_window(translated=False):
-        engine = QQmlApplicationEngine()
-        engine.rootContext().setContextProperty("bridge", controller)
-        engine.rootContext().setContextProperty("arcadeFamily", family)
-        engine.rootContext().setContextProperty("groteskFamily", grotesk)
+        previous_count = len(engine.rootObjects())
         engine.setInitialProperties({"translationDisplay": translated})
         engine.load(QUrl.fromLocalFile(str(root / "desktop" / "Visualizer.qml")))
-        if not engine.rootObjects():
+        if len(engine.rootObjects()) != previous_count + 1:
             raise RuntimeError("No se pudo cargar la ventana nativa. Revisa " + str(log_path))
-        window = engine.rootObjects()[0]
-        engines.append(engine)
+        window = engine.rootObjects()[-1]
         windows.append(window)
         window.visibleChanged.connect(update_visibility)
         window.visibilityChanged.connect(update_visibility)
@@ -219,9 +221,7 @@ def main():
         window.releaseResources()
     app.processEvents()
     os.write(crash_fd, b'Destroying QML engines\n')
-    for engine in engines:
-        delete(engine)
-    engines.clear()
+    delete(engine)
     windows.clear()
     os.write(crash_fd, b'Destroying controller and application\n')
     delete(controller)
