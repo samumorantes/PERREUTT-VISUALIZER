@@ -44,6 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
+          QT_DEBUG_PLUGINS: '1'
         run: python scripts/check_native.py
       - name: Check packaged renderer (Windows/macOS)
         if: runner.os != 'Linux'
