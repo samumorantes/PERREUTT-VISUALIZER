@@ -37,9 +37,6 @@ a = Analysis(['fiesta_desktop.py'], pathex=[str(root)], binaries=[], datas=datas
 # Qt's generic QML hook collects optional modules. Keep only the imports used by
 # this UI, and the Basic controls style. Nothing here uses QtWidgets/WebEngine.
 def needed(entry):
-    # The Windows trimming rules are not valid for Unix frameworks/plugins.
-    if sys.platform != 'win32':
-        return True
     name = entry[0].replace('\\', '/')
     low = name.lower()
     if any(word in low for word in ('webengine', 'webview', 'qtwebchannel', 'qt6web', 'qtwebsockets')):
@@ -56,7 +53,7 @@ def needed(entry):
         category = name[len('PySide6/plugins/'):].split('/')[0]
         if category not in ('platforms', 'imageformats', 'iconengines', 'tls', 'networkinformation', 'styles'):
             return False
-    prefix = 'PySide6/qml/'
+    prefix = 'PySide6/Qt/qml/' if name.startswith('PySide6/Qt/qml/') else 'PySide6/qml/'
     if name.startswith(prefix):
         rel = name[len(prefix):]
         if not rel.startswith(('QtQuick/', 'QtQml/')):

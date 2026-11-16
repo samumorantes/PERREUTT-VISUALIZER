@@ -32,7 +32,7 @@ def main():
     args = parser.parse_args()
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     data = data_directory()
-    data.mkdir(parents=True, exist_ok=True)
+    data.mkdir(mode=0o700, parents=True, exist_ok=True)
     # Migrate local credentials only at runtime; they are never build inputs.
     origin = Path(sys.executable).parent if getattr(sys, "frozen", False) else root
     if not args.smoke_test and not (data / '.credentials-imported').exists():
@@ -202,9 +202,22 @@ def main():
 
         QTimer.singleShot(4000, capture)
     app.exec()
-    # Explicitly destroy scenes while their controller/context is still alive.
+    # Stop render threads while the application and all scene contexts are
+    # still alive. Metal must release its windows before Qt's global teardown.
+    for window in windows:
+        window.visibleChanged.disconnect(update_visibility)
+        window.visibilityChanged.disconnect(update_visibility)
+        window.setPersistentSceneGraph(False)
+        window.setPersistentGraphics(False)
+        window.hide()
+        window.releaseResources()
+    app.processEvents()
     for engine in engines:
         delete(engine)
+    engines.clear()
+    windows.clear()
+    delete(controller)
+    delete(app)
     qInstallMessageHandler(None)
     log.close()
     return result_code
@@ -216,7 +229,7 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         data = data_directory()
-        data.mkdir(parents=True, exist_ok=True)
+        data.mkdir(mode=0o700, parents=True, exist_ok=True)
         (data / "startup-error.log").write_text(traceback.format_exc(), encoding="utf-8")
         if sys.stderr:
             traceback.print_exc()

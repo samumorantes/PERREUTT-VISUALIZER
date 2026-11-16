@@ -58,7 +58,8 @@ las distribuciones. X11/XWayland es la referencia del build.
 
 En Ubuntu/Debian, instala con el gestor del sistema las bibliotecas
 `libegl1 libopengl0 libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4
-libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libpulse0`.
+libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libxcb-shape0 libxcb-xfixes0
+libxcb-randr0 libxcb-sync1 libxcb-xinerama0 libpulse0`.
 Qt y Python van incluidos; el servidor de audio no.
 
 Extrae el `.tar.gz` en una carpeta permanente y ejecuta `FIESTA/FIESTA`.
